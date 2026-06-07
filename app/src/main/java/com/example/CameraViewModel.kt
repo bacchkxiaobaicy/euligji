@@ -173,12 +173,16 @@ class CameraViewModel : ViewModel() {
             file = file,
             accessToken = token,
             onSuccess = { fileId ->
-                _isUploading.value = false
-                onResult(true, "上传 Google Drive 成功！文件 id: $fileId")
+                viewModelScope.launch(Dispatchers.Main) {
+                    _isUploading.value = false
+                    onResult(true, "上传 Google Drive 成功！文件 id: $fileId")
+                }
             },
             onError = { exception ->
-                _isUploading.value = false
-                onResult(false, "上传 Google Drive 失败: ${exception.message}")
+                viewModelScope.launch(Dispatchers.Main) {
+                    _isUploading.value = false
+                    onResult(false, "上传 Google Drive 失败: ${exception.message}")
+                }
             }
         )
     }

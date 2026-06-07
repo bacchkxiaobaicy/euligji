@@ -925,15 +925,27 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     var inputToken by remember { mutableStateOf(driveAccessToken) }
     var showDeveloperErrorDialog by remember { mutableStateOf(false) }
 
+    var webClientId by remember { mutableStateOf("") }
+    var inputWebClientId by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        webClientId = prefs.getString("google_web_client_id", "") ?: ""
+        inputWebClientId = webClientId
+    }
+
     // Setup standard Google Sign In configurations client
-    val gso = remember {
-        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+    val googleSignInClient = remember(webClientId) {
+        val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
             .requestScopes(Scope("https://www.googleapis.com/auth/drive"))
-            .build()
-    }
-    val googleSignInClient = remember {
-        GoogleSignIn.getClient(context, gso)
+            
+        if (webClientId.isNotBlank()) {
+            gsoBuilder.requestIdToken(webClientId)
+            gsoBuilder.requestServerAuthCode(webClientId)
+        }
+        
+        GoogleSignIn.getClient(context, gsoBuilder.build())
     }
 
     val googleRecoveryLauncher = rememberLauncherForActivityResult(
@@ -1159,7 +1171,7 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
                     Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.15f)))
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        "备用方案：手动设置 Access Token (开发者选项)",
+                        "备用方案 1：手动设置 Access Token (开发者选项)",
                         color = Color.White.copy(alpha = 0.6f),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
@@ -1180,14 +1192,40 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
                         ),
                         placeholder = { Text("Google OAuth Token (Bearer ...)", color = Color.White.copy(alpha = 0.4f), fontSize = 12.sp) }
                     )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "备用方案 2：配置 Web 客户端 ID (若一键授权报错 10)",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextField(
+                        value = inputWebClientId,
+                        onValueChange = { inputWebClientId = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Black.copy(alpha = 0.3f),
+                            unfocusedContainerColor = Color.Black.copy(alpha = 0.3f),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            cursorColor = Color(0xFFFFD54F)
+                        ),
+                        placeholder = { Text("Google Cloud Web Client ID (xxx.apps.googleusercontent.com)", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp) }
+                    )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         viewModel.saveDriveToken(context, inputToken)
+                        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                        prefs.edit().putString("google_web_client_id", inputWebClientId).apply()
+                        webClientId = inputWebClientId
                         showTokenDialog = false
-                        Toast.makeText(context, "授权 Access Token 保存成功！", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "授权及 Web 客户端配置保存成功！", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
                 ) {
