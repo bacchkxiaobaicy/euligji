@@ -53,7 +53,15 @@ object GoogleDriveService {
                     }
 
                     if (!response.isSuccessful) {
-                        onError(IOException("上传失败，状态码: ${response.code}，原因: ${responseBody.take(200)}"))
+                        val parsedError = try {
+                            val json = org.json.JSONObject(responseBody)
+                            val errorObj = json.optJSONObject("error")
+                            errorObj?.optString("message") ?: responseBody.take(200)
+                        } catch (e: Exception) {
+                            responseBody.take(200)
+                        }
+                        android.util.Log.e("GoogleDriveService", "Upload failed with status ${response.code}: $responseBody")
+                        onError(IOException("上传失败 (状态码: ${response.code}): $parsedError"))
                     } else {
                         try {
                             val json = JSONObject(responseBody)

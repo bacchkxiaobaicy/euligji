@@ -282,6 +282,15 @@ fun CameraAppScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     // Pinch Zoom visual toast overlay
     var showZoomToast by remember { mutableStateOf(false) }
 
+    // --- BEAUTY CONTROL STATES ---
+    val isBeautyEnabled by viewModel.isBeautyEnabled.collectAsState()
+    val beautySmooth by viewModel.beautySmooth.collectAsState()
+    val beautySlim by viewModel.beautySlim.collectAsState()
+    val beautyBigEyes by viewModel.beautyBigEyes.collectAsState()
+    val beautyWhiten by viewModel.beautyWhiten.collectAsState()
+    val beautyRuddy by viewModel.beautyRuddy.collectAsState()
+    var showBeautyPanel by remember { mutableStateOf(false) }
+
     // Rebind use-cases whenever Lens Selector or active Screen state changes
     LaunchedEffect(lensFacing, currentScreen) {
         val cameraProvider = context.getCameraProvider()
@@ -906,6 +915,166 @@ fun CameraAppScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
                         )
                     }
                 }
+
+                // --- PREMIUM BEAUTY FLOATING CONTROLS PANEL ---
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 16.dp)
+                        .offset(y = 80.dp) // Offset slightly so it sits neatly in the middle of viewfinder RHS screen space
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (showBeautyPanel) Color(0xFFFFD54F).copy(alpha = 0.22f) 
+                                else Color.Black.copy(alpha = 0.55f)
+                            )
+                            .border(
+                                width = 1.5.dp, 
+                                color = if (showBeautyPanel) Color(0xFFFFD54F) else Color.White.copy(alpha = 0.25f), 
+                                shape = CircleShape
+                            )
+                            .clickable { showBeautyPanel = !showBeautyPanel }
+                            .testTag("camera_beauty_panel_toggle"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoFixHigh,
+                            contentDescription = "美颜调节",
+                            tint = if (showBeautyPanel) Color(0xFFFFD54F) else Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = showBeautyPanel,
+                    enter = slideInVertically(
+                        initialOffsetY = { it },
+                        animationSpec = spring(stiffness = Spring.StiffnessLow)
+                    ) + fadeIn(),
+                    exit = slideOutVertically(
+                        targetOffsetY = { it },
+                        animationSpec = spring(stiffness = Spring.StiffnessLow)
+                    ) + fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 180.dp, start = 20.dp, end = 20.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xE00F172A)) // Frosted Slate Card
+                            .border(1.2.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(24.dp))
+                            .padding(18.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            // Title and Master Switch
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Face,
+                                        contentDescription = "美颜微调",
+                                        tint = Color(0xFFFFD54F),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "自研人像美颜引擎",
+                                        color = Color.White,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                
+                                // Master Enable badge button
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .background(
+                                            if (isBeautyEnabled) Color(0xFFFFD54F).copy(alpha = 0.20f)
+                                            else Color.White.copy(alpha = 0.08f),
+                                            RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable { viewModel.setBeautyEnabled(!isBeautyEnabled) }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = if (isBeautyEnabled) "已开启" else "已关闭",
+                                        color = if (isBeautyEnabled) Color(0xFFFFD54F) else Color.White.copy(alpha = 0.6f),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Divider(color = Color.White.copy(alpha = 0.08f), thickness = 1.dp)
+
+                            if (isBeautyEnabled) {
+                                val beautySliders = listOf(
+                                    Triple("磨皮 (祛痘去皱)", beautySmooth) { v: Float -> viewModel.setBeautySmooth(v) },
+                                    Triple("瘦脸 (紧致塑形)", beautySlim) { v: Float -> viewModel.setBeautySlim(v) },
+                                    Triple("大眼 (深邃有神)", beautyBigEyes) { v: Float -> viewModel.setBeautyBigEyes(v) },
+                                    Triple("美白 (无瑕莹润)", beautyWhiten) { v: Float -> viewModel.setBeautyWhiten(v) },
+                                    Triple("红润 (白里透红)", beautyRuddy) { v: Float -> viewModel.setBeautyRuddy(v) }
+                                )
+
+                                beautySliders.forEach { (label, value, onValueChange) ->
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(text = label, color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+                                            Text(
+                                                text = "${(value * 100).toInt()}%",
+                                                color = Color(0xFFFFD54F),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                        Slider(
+                                            value = value,
+                                            onValueChange = onValueChange,
+                                            colors = SliderDefaults.colors(
+                                                activeTrackColor = Color(0xFFFFD54F),
+                                                inactiveTrackColor = Color.White.copy(alpha = 0.15f),
+                                                thumbColor = Color(0xFFFFD54F)
+                                            ),
+                                            modifier = Modifier.height(28.dp)
+                                        )
+                                    }
+                                }
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "人像美颜已在上方设为关闭。\n开启后系统将在拍摄时启用自研美白、磨皮与塑形美颜滤镜。",
+                                        color = Color.White.copy(alpha = 0.45f),
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Big Timer Tick count screen central visualizer
@@ -1005,7 +1174,10 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     val googleSignInClient = remember(webClientId) {
         val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(Scope("https://www.googleapis.com/auth/drive"))
+            .requestScopes(
+                Scope("https://www.googleapis.com/auth/drive.file"),
+                Scope("https://www.googleapis.com/auth/drive")
+            )
             
         if (webClientId.isNotBlank()) {
             gsoBuilder.requestIdToken(webClientId)
