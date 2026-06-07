@@ -26,21 +26,11 @@ object GoogleDriveService {
             val mediaTypeJson = "application/json; charset=UTF-8".toMediaTypeOrNull()
             val mediaTypeJpeg = "image/jpeg".toMediaTypeOrNull()
 
+            val multipartType = "multipart/related".toMediaTypeOrNull() ?: MultipartBody.FORM
             val requestBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addPart(
-                    Headers.Builder()
-                        .add("Content-Type", "application/json; charset=UTF-8")
-                        .build(),
-                    metadata.toRequestBody(mediaTypeJson)
-                )
-                .addPart(
-                    Headers.Builder()
-                        .add("Content-Disposition", "form-data; name=\"file\"; filename=\"${file.name}\"")
-                        .add("Content-Type", "image/jpeg")
-                        .build(),
-                    file.asRequestBody(mediaTypeJpeg)
-                )
+                .setType(multipartType)
+                .addPart(metadata.toRequestBody(mediaTypeJson))
+                .addPart(file.asRequestBody(mediaTypeJpeg))
                 .build()
 
             val request = Request.Builder()
