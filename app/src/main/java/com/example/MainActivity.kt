@@ -25,6 +25,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -90,6 +92,19 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Uncaught crash handler to record exceptions in SharedPreferences
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                val sw = java.io.StringWriter()
+                throwable.printStackTrace(java.io.PrintWriter(sw))
+                prefs.edit().putString("last_crash_log", sw.toString()).commit()
+            } catch (ignored: Exception) {}
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme(darkTheme = true) {
@@ -97,6 +112,58 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = Color.Black
                 ) {
+                    val context = LocalContext.current
+                    var lastCrashLog by remember { mutableStateOf("") }
+                    LaunchedEffect(Unit) {
+                        try {
+                            val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                            lastCrashLog = prefs.getString("last_crash_log", "") ?: ""
+                        } catch (e: Exception) {}
+                    }
+
+                    if (lastCrashLog.isNotEmpty()) {
+                        AlertDialog(
+                            onDismissRequest = {
+                                try {
+                                    val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                                    prefs.edit().remove("last_crash_log").apply()
+                                    lastCrashLog = ""
+                                } catch (e: Exception) {}
+                            },
+                            title = { Text("⚠️ 检测到异常闪退记录", color = Color.White, fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column {
+                                    Text("应用检测到上次运行可能发生了非预期崩溃，以下是调试堆栈信息：", color = Color.White.copy(alpha = 0.8f))
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 200.dp)
+                                            .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                            .padding(8.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        Text(lastCrashLog, color = Color(0xFFFF8A80), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        try {
+                                            val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                                            prefs.edit().remove("last_crash_log").apply()
+                                            lastCrashLog = ""
+                                        } catch (e: Exception) {}
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
+                                ) {
+                                    Text("清除崩溃记录")
+                                }
+                            }
+                        )
+                    }
+
                     val cameraPermissionState = rememberPermissionState(
                         permission = Manifest.permission.CAMERA
                     )

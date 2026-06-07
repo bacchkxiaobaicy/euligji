@@ -169,22 +169,40 @@ class CameraViewModel : ViewModel() {
             return
         }
         _isUploading.value = true
-        GoogleDriveService.uploadPhoto(
-            file = file,
-            accessToken = token,
-            onSuccess = { fileId ->
-                viewModelScope.launch(Dispatchers.Main) {
-                    _isUploading.value = false
-                    onResult(true, "上传 Google Drive 成功！文件 id: $fileId")
+        
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (!file.exists()) {
+                    withContext(Dispatchers.Main) {
+                        _isUploading.value = false
+                        onResult(false, "上传失败：本地照片文件不存在")
+                    }
+                    return@launch
                 }
-            },
-            onError = { exception ->
-                viewModelScope.launch(Dispatchers.Main) {
+                
+                GoogleDriveService.uploadPhoto(
+                    file = file,
+                    accessToken = token,
+                    onSuccess = { fileId ->
+                        viewModelScope.launch(Dispatchers.Main) {
+                            _isUploading.value = false
+                            onResult(true, "上传 Google Drive 成功！文件 id: $fileId")
+                        }
+                    },
+                    onError = { exception ->
+                        viewModelScope.launch(Dispatchers.Main) {
+                            _isUploading.value = false
+                            onResult(false, "上传 Google Drive 失败: ${exception.message}")
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
                     _isUploading.value = false
-                    onResult(false, "上传 Google Drive 失败: ${exception.message}")
+                    onResult(false, "启动上传时遇到错误: ${e.message}")
                 }
             }
-        )
+        }
     }
 
     fun loadLocalPhotos(context: Context) {

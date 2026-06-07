@@ -17,62 +17,66 @@ object GoogleDriveService {
         onSuccess: (String) -> Unit,
         onError: (Exception) -> Unit
     ) {
-        val metadata = JSONObject().apply {
-            put("name", file.name)
-            put("mimeType", "image/jpeg")
-        }.toString()
+        try {
+            val metadata = JSONObject().apply {
+                put("name", file.name)
+                put("mimeType", "image/jpeg")
+            }.toString()
 
-        val mediaTypeJson = "application/json; charset=UTF-8".toMediaTypeOrNull()
-        val mediaTypeJpeg = "image/jpeg".toMediaTypeOrNull()
+            val mediaTypeJson = "application/json; charset=UTF-8".toMediaTypeOrNull()
+            val mediaTypeJpeg = "image/jpeg".toMediaTypeOrNull()
 
-        val requestBody = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addPart(
-                Headers.Builder()
-                    .add("Content-Type", "application/json; charset=UTF-8")
-                    .build(),
-                metadata.toRequestBody(mediaTypeJson)
-            )
-            .addPart(
-                Headers.Builder()
-                    .add("Content-Disposition", "form-data; name=\"file\"; filename=\"${file.name}\"")
-                    .add("Content-Type", "image/jpeg")
-                    .build(),
-                file.asRequestBody(mediaTypeJpeg)
-            )
-            .build()
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addPart(
+                    Headers.Builder()
+                        .add("Content-Type", "application/json; charset=UTF-8")
+                        .build(),
+                    metadata.toRequestBody(mediaTypeJson)
+                )
+                .addPart(
+                    Headers.Builder()
+                        .add("Content-Disposition", "form-data; name=\"file\"; filename=\"${file.name}\"")
+                        .add("Content-Type", "image/jpeg")
+                        .build(),
+                    file.asRequestBody(mediaTypeJpeg)
+                )
+                .build()
 
-        val request = Request.Builder()
-            .url("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
-            .header("Authorization", "Bearer $accessToken")
-            .post(requestBody)
-            .build()
+            val request = Request.Builder()
+                .url("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+                .header("Authorization", "Bearer $accessToken")
+                .post(requestBody)
+                .build()
 
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                onError(e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                val responseBody = try {
-                    response.body?.string() ?: ""
-                } catch (e: Exception) {
-                    onError(IOException("读取服务器响应数据失败: ${e.message}"))
-                    return
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    onError(e)
                 }
 
-                if (!response.isSuccessful) {
-                    onError(IOException("上传失败，状态码: ${response.code}，原因: ${responseBody.take(200)}"))
-                } else {
-                    try {
-                        val json = JSONObject(responseBody)
-                        val fileId = json.optString("id", "Unknown ID")
-                        onSuccess(fileId)
+                override fun onResponse(call: Call, response: Response) {
+                    val responseBody = try {
+                        response.body?.string() ?: ""
                     } catch (e: Exception) {
-                        onSuccess("已上传 (但无法解析返回的ID)")
+                        onError(IOException("读取服务器响应数据失败: ${e.message}"))
+                        return
+                    }
+
+                    if (!response.isSuccessful) {
+                        onError(IOException("上传失败，状态码: ${response.code}，原因: ${responseBody.take(200)}"))
+                    } else {
+                        try {
+                            val json = JSONObject(responseBody)
+                            val fileId = json.optString("id", "Unknown ID")
+                            onSuccess(fileId)
+                        } catch (e: Exception) {
+                            onSuccess("已上传 (但无法解析返回的ID)")
+                        }
                     }
                 }
-            }
-        })
+            })
+        } catch (e: Exception) {
+            onError(e)
+        }
     }
 }
