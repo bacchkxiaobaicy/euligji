@@ -2,6 +2,7 @@ package com.example
 
 import android.accounts.Account
 import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.UserRecoverableAuthException
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import android.content.ContentValues
 import android.content.Context
@@ -100,7 +101,12 @@ class CameraViewModel : ViewModel() {
         prefs.edit().putString("drive_access_token", token).apply()
     }
 
-    fun retrieveAndSaveDriveToken(context: Context, signInAccount: GoogleSignInAccount, onComplete: (Boolean, String) -> Unit) {
+    fun retrieveAndSaveDriveToken(
+        context: Context, 
+        signInAccount: GoogleSignInAccount, 
+        onRecoverableException: (android.content.Intent) -> Unit,
+        onComplete: (Boolean, String) -> Unit
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val email = signInAccount.email ?: ""
@@ -132,6 +138,15 @@ class CameraViewModel : ViewModel() {
                 } else {
                     withContext(Dispatchers.Main) {
                         onComplete(false, "未能获取有效的 Google Access Token")
+                    }
+                }
+            } catch (e: UserRecoverableAuthException) {
+                withContext(Dispatchers.Main) {
+                    val recoveryIntent = e.intent
+                    if (recoveryIntent != null) {
+                        onRecoverableException(recoveryIntent)
+                    } else {
+                        onComplete(false, "谷歌账号安全认证需要进一步操作，但未能获取到验证页面")
                     }
                 }
             } catch (e: Exception) {

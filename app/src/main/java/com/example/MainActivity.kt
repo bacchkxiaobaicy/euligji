@@ -215,34 +215,49 @@ fun CameraAppScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     // Pinch Zoom visual toast overlay
     var showZoomToast by remember { mutableStateOf(false) }
 
-    // Rebind use-cases whenever Lens Selector changes
-    LaunchedEffect(lensFacing) {
+    // Rebind use-cases whenever Lens Selector or active Screen state changes
+    LaunchedEffect(lensFacing, currentScreen) {
         val cameraProvider = context.getCameraProvider()
-        
-        val preview = Preview.Builder().build().apply {
-            setSurfaceProvider(previewView.surfaceProvider)
-        }
+        if (currentScreen == AppScreen.CAMERA) {
+            // Wait until Lifecycle is active (RESUMED) to prevent premature camera start and coordinate AppOps permissions
+            while (!lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+                delay(100)
+            }
 
-        val capture = ImageCapture.Builder()
-            .setFlashMode(flashMode)
-            .build()
+            val preview = Preview.Builder().build().apply {
+                setSurfaceProvider(previewView.surfaceProvider)
+            }
 
-        val cameraSelector = CameraSelector.Builder()
-            .requireLensFacing(lensFacing)
-            .build()
+            val capture = ImageCapture.Builder()
+                .setFlashMode(flashMode)
+                .build()
 
-        try {
-            cameraProvider.unbindAll()
-            cameraInstance = cameraProvider.bindToLifecycle(
-                lifecycleOwner,
-                cameraSelector,
-                preview,
-                capture
-            )
-            imageCaptureUseCase = capture
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(context, "绑定相机发生故障: ${e.message}", Toast.LENGTH_LONG).show()
+            val cameraSelector = CameraSelector.Builder()
+                .requireLensFacing(lensFacing)
+                .build()
+
+            try {
+                cameraProvider.unbindAll()
+                cameraInstance = cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    cameraSelector,
+                    preview,
+                    capture
+                )
+                imageCaptureUseCase = capture
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, "绑定相机发生故障: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            // Unbind camera usecases when not displaying the camera screen to release hardware resource elegantly
+            try {
+                cameraProvider.unbindAll()
+                cameraInstance = null
+                imageCaptureUseCase = null
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
@@ -908,6 +923,7 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     
     var showTokenDialog by remember { mutableStateOf(false) }
     var inputToken by remember { mutableStateOf(driveAccessToken) }
+    var showDeveloperErrorDialog by remember { mutableStateOf(false) }
 
     // Setup standard Google Sign In configurations client
     val gso = remember {
@@ -920,6 +936,28 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
         GoogleSignIn.getClient(context, gso)
     }
 
+    val googleRecoveryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val account = GoogleSignIn.getLastSignedInAccount(context)
+            if (account != null) {
+                viewModel.retrieveAndSaveDriveToken(
+                    context = context,
+                    signInAccount = account,
+                    onRecoverableException = { intent ->
+                        Toast.makeText(context, "请在弹出窗口中同意授权 Google Drive 权限", Toast.LENGTH_SHORT).show()
+                    },
+                    onComplete = { success, msg ->
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    }
+                )
+            }
+        } else {
+            Toast.makeText(context, "权限授予取消", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -927,14 +965,25 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
         try {
             val account = task.getResult(ApiException::class.java)
             if (account != null) {
-                viewModel.retrieveAndSaveDriveToken(context, account) { success, msg ->
-                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                }
+                viewModel.retrieveAndSaveDriveToken(
+                    context = context,
+                    signInAccount = account,
+                    onRecoverableException = { intent ->
+                        googleRecoveryLauncher.launch(intent)
+                    },
+                    onComplete = { success, msg ->
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    }
+                )
             } else {
                 Toast.makeText(context, "谷歌账号授权取消", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            Toast.makeText(context, "谷歌账号授权失败: ${e.message}", Toast.LENGTH_LONG).show()
+            if (e is ApiException && e.statusCode == 10) {
+                showDeveloperErrorDialog = true
+            } else {
+                Toast.makeText(context, "谷歌账号授权失败: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -1148,6 +1197,134 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
             dismissButton = {
                 TextButton(onClick = { showTokenDialog = false }) {
                     Text("取消", color = Color.White.copy(alpha = 0.6f))
+                }
+            }
+        )
+    }
+
+    if (showDeveloperErrorDialog) {
+        val appPackageName = "com.aistudio.simplecamera.vtxpyn"
+        val debugSha1 = "E9:2D:E8:DE:20:F8:2E:09:96:28:35:A2:A5:20:F1:1B:A7:26:32:2E"
+        val debugSha256 = "B2:1B:CC:CD:CE:8F:D0:23:D7:E4:C4:7C:25:71:04:2C:77:88:54:CC:D8:26:71:EF:6A:47:03:C5:3C:90:02:EF"
+        
+        AlertDialog(
+            onDismissRequest = { showDeveloperErrorDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.Cloud, contentDescription = "授权提示", tint = Color(0xFFFFD54F), modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("提示: 需登记证书指纹", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            containerColor = Color(0xFF1E293B),
+            text = {
+                Column {
+                    Text(
+                        "由于 Google 安全设置，一键授权需要将应用证书登记在您的 Google Cloud 凭据页（报错 Code 10 代表该证书未在您的云端后台登记）。",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "请前往 Google Cloud 控制台 -> 凭据 -> 创建 Android OAuth 客户端 绑定，或在您的 Firebase 项目设置下添加以下指纹：",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    
+                    // Box 1: Package
+                    Text("应用包名 (Package Name):", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(appPackageName, color = Color.White, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        TextButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("packageName", appPackageName)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "包名已复制", Toast.LENGTH_SHORT).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("复制", color = Color(0xFFFFD54F), fontSize = 11.sp)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Box 2: SHA-1
+                    Text("SHA-1 证书指纹:", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(debugSha1, color = Color.White, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        TextButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("sha1", debugSha1)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "SHA-1 已复制", Toast.LENGTH_SHORT).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("复制", color = Color(0xFFFFD54F), fontSize = 11.sp)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Box 3: SHA-256
+                    Text("SHA-256 证书指纹:", color = Color(0xFFFFD54F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(debugSha256, color = Color.White, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        TextButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("sha256", debugSha256)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "SHA-256 已复制", Toast.LENGTH_SHORT).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("复制", color = Color(0xFFFFD54F), fontSize = 11.sp)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        "提示：如果您觉得在后台登记指纹繁琐，也可以使用“备用方案: 手动配置 Access Token”调试选项，在设置对话框中输入 Token 依然可以开始备份上传！",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showDeveloperErrorDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
+                ) {
+                    Text("我知道了", fontWeight = FontWeight.Bold)
                 }
             }
         )
