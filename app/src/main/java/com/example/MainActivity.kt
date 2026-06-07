@@ -32,6 +32,9 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -96,7 +99,24 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (cameraPermissionState.status.isGranted) {
-                        CameraAppScreen(viewModel = viewModel)
+                        var showOAuthToast by remember { mutableStateOf(false) }
+                        if (showOAuthToast) {
+                            LaunchedEffect(Unit) {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "正在启动 Google Drive 授权，请在 AI 助手侧确认授权提示！",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                showOAuthToast = false
+                            }
+                        }
+
+                        CameraAppScreen(
+                            viewModel = viewModel,
+                            onStartOAuth = {
+                                showOAuthToast = true
+                            }
+                        )
                     } else {
                         PermissionPlaceholderScreen(
                             onRequestPermission = { cameraPermissionState.launchPermissionRequest() }
@@ -151,11 +171,12 @@ fun FrostedGlassIconButton(
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("ClickableViewAccessibility")
 @Composable
-fun CameraAppScreen(viewModel: CameraViewModel) {
+fun CameraAppScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // Observe StateFLow values from VM
+    val currentScreen by viewModel.currentScreen.collectAsState()
     val lensFacing by viewModel.lensFacing.collectAsState()
     val flashMode by viewModel.flashMode.collectAsState()
     val aspectRatio by viewModel.aspectRatio.collectAsState()
@@ -257,6 +278,8 @@ fun CameraAppScreen(viewModel: CameraViewModel) {
     }
 
     // Single click trigger to capture image with storage
+    var pendingSavePhoto by remember { mutableStateOf<File?>(null) }
+
     fun executeImageCapture() {
         val activeCapture = imageCaptureUseCase
         if (activeCapture == null) {
@@ -270,7 +293,9 @@ fun CameraAppScreen(viewModel: CameraViewModel) {
         }
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
-        val targetFile = File(capturesDirectory, "IMG_$timestamp.jpg")
+        val isFront = lensFacing == CameraSelector.LENS_FACING_FRONT
+        val prefix = if (isFront) "IMG_FRONT_" else "IMG_"
+        val targetFile = File(capturesDirectory, "${prefix}$timestamp.jpg")
 
         val outputOptions = ImageCapture.OutputFileOptions.Builder(targetFile).build()
 
@@ -283,8 +308,8 @@ fun CameraAppScreen(viewModel: CameraViewModel) {
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    Toast.makeText(context, "快门合上，照片保存成功！", Toast.LENGTH_SHORT).show()
                     viewModel.addCapturedPhoto(context, targetFile)
+                    pendingSavePhoto = targetFile
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -308,11 +333,12 @@ fun CameraAppScreen(viewModel: CameraViewModel) {
     )
 
     // Standard Scaffold with customized Frosted Glass design system styling
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backgroundBrush)
-    ) {
+    if (currentScreen == AppScreen.CAMERA) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(backgroundBrush)
+        ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             containerColor = Color.Transparent,
@@ -390,7 +416,8 @@ fun CameraAppScreen(viewModel: CameraViewModel) {
                                 val nextMode = when (aspectRatio) {
                                     AspectRatioMode.RATIO_4_3 -> AspectRatioMode.RATIO_16_9
                                     AspectRatioMode.RATIO_16_9 -> AspectRatioMode.RATIO_1_1
-                                    AspectRatioMode.RATIO_1_1 -> AspectRatioMode.RATIO_4_3
+                                    AspectRatioMode.RATIO_1_1 -> AspectRatioMode.RATIO_9_16
+                                    AspectRatioMode.RATIO_9_16 -> AspectRatioMode.RATIO_4_3
                                 }
                                 viewModel.setAspectRatio(nextMode)
                             }
@@ -531,22 +558,23 @@ fun CameraAppScreen(viewModel: CameraViewModel) {
                                     .border(1.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
                                     .testTag("gallery_preview_shortcut")
                                     .clickable {
-                                        if (photos.isNotEmpty()) {
-                                            viewModel.selectPhoto(photos.first())
-                                        } else {
-                                            Toast
-                                                .makeText(context, "画廊空空如也，拍张照片试试吧！", Toast.LENGTH_SHORT)
-                                                .show()
-                                        }
+                                        viewModel.navigateTo(AppScreen.ALBUM)
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (photos.isNotEmpty()) {
+                                    val isFront = photos.first().name.startsWith("IMG_FRONT_")
                                     AsyncImage(
                                         model = photos.first(),
                                         contentDescription = "最近相片",
                                         contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .graphicsLayer {
+                                                if (isFront) {
+                                                    scaleX = -1f
+                                                }
+                                            }
                                     )
                                 } else {
                                     Icon(
@@ -819,209 +847,527 @@ fun CameraAppScreen(viewModel: CameraViewModel) {
         }
     }
 
-    // Modern High-Fidelity Filters Overlay & Capture Explorer Modal (Full Screen Sheet Dialog)
-    selectedPhoto?.let { photoFile ->
-        val activeFilter by viewModel.selectedFilter.collectAsState()
-        var showDeleteConfirm by remember { mutableStateOf(false) }
+    }
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(backgroundBrush) // Cohesive unified gradient background!
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Top controls row with glassmorphism style buttons
+    if (currentScreen == AppScreen.ALBUM) {
+        BuiltInAlbumScreen(viewModel = viewModel, onStartOAuth = onStartOAuth)
+    }
+
+    if (currentScreen == AppScreen.EDITOR) {
+        PhotoEditorScreen(viewModel = viewModel)
+    }
+
+    // Save prompt dialog after capture succeeds
+    pendingSavePhoto?.let { targetFile ->
+        AlertDialog(
+            onDismissRequest = { pendingSavePhoto = null },
+            title = { Text(text = "照片保存选项", fontWeight = FontWeight.Bold, color = Color.White) },
+            text = { Text(text = "照片已拍摄成功！请选择您希望保存的位置：", color = Color.White.copy(alpha = 0.8f)) },
+            containerColor = Color(0xFF1E293B),
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val file = targetFile
+                        pendingSavePhoto = null
+                        viewModel.uploadToDrive(context, file) { success, msg ->
+                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD54F), contentColor = Color.Black)
+                ) {
+                    Text(text = "保存到 Google Drive 云端", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingSavePhoto = null
+                        Toast.makeText(context, "已成功保存在本地内置相册中！", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text(text = "保存在本地", color = Color.White)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
+    val context = LocalContext.current
+    val photos by viewModel.photos.collectAsState()
+    val driveAccessToken by viewModel.driveAccessToken.collectAsState()
+    val isUploading by viewModel.isUploading.collectAsState()
+    
+    var showTokenDialog by remember { mutableStateOf(false) }
+    var inputToken by remember { mutableStateOf(driveAccessToken) }
+
+    val backgroundBrush = Brush.linearGradient(
+        colors = listOf(
+            Color(0xFF030712), // slate-950
+            Color(0xFF0F172A), // slate-900
+            Color(0xFF1E293B), // slate-800
+            Color(0xFF1E1B4B)  // indigo-950
+        ),
+        start = Offset(0f, 0f),
+        end = Offset(1000f, 2000f)
+    )
+
+    LaunchedEffect(driveAccessToken) {
+        inputToken = driveAccessToken
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundBrush)
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = Color.Transparent,
+            topBar = {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 16.dp, horizontal = 20.dp),
+                        .statusBarsPadding()
+                        .padding(vertical = 12.dp, horizontal = 20.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Back button
                     FrostedGlassIconButton(
-                        onClick = { viewModel.selectPhoto(null) }
+                        onClick = { viewModel.navigateTo(AppScreen.CAMERA) }
                     ) {
-                        Icon(imageVector = Icons.Default.Close, contentDescription = "关闭", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "返回相机", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
 
                     Text(
-                        text = "照片详情与滤镜",
-                        fontSize = 16.sp,
+                        text = "内置相册",
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = Color.White
                     )
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // Export/Save Photo button
-                        FrostedGlassIconButton(
-                            onClick = {
-                                viewModel.savePhotoToPublicGallery(context, photoFile, activeFilter) { success, msg ->
-                                    Toast.makeText(context, msg ?: "操作结果已出", Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        ) {
-                            Icon(imageVector = Icons.Default.Save, contentDescription = "导出至相册", tint = Color(0xFFFFD54F), modifier = Modifier.size(20.dp))
-                        }
-
-                        // Delete button
-                        FrostedGlassIconButton(
-                            onClick = { showDeleteConfirm = true }
-                        ) {
-                            Icon(imageVector = Icons.Default.Delete, contentDescription = "删除该照片", tint = Color(0xFFEF5350), modifier = Modifier.size(20.dp))
-                        }
-                    }
-                }
-
-                // Middle area: High Res Photo with active real-time Color Matrix filter
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .background(Color.Transparent),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AsyncImage(
-                        model = photoFile,
-                        contentDescription = "查看相片",
-                        contentScale = ContentScale.Fit,
-                        colorFilter = if (activeFilter != FilterType.ORIGINAL) {
-                            ColorFilter.colorMatrix(activeFilter.getComposeMatrix())
-                        } else null,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    // Navigation buttons inside the slider gallery
-                    val photoIndex = photos.indexOf(photoFile)
-                    if (photoIndex > 0) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .padding(start = 16.dp)
-                                .size(46.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.12f))
-                                .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                                .clickable { viewModel.selectPhoto(photos[photoIndex - 1]) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(imageVector = Icons.Default.ChevronLeft, contentDescription = "前一张", tint = Color.White, modifier = Modifier.size(24.dp))
-                        }
-                    }
-
-                    if (photoIndex < photos.size - 1) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .padding(end = 16.dp)
-                                .size(46.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.12f))
-                                .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                                .clickable { viewModel.selectPhoto(photos[photoIndex + 1]) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(imageVector = Icons.Default.ChevronRight, contentDescription = "后一张", tint = Color.White, modifier = Modifier.size(24.dp))
-                        }
-                    }
-                }
-
-                // Horizontal Filters Selector Reel (frosted block design)
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color.White.copy(alpha = 0.06f))
-                        .border(
-                            width = 1.dp,
-                            color = Color.White.copy(alpha = 0.1f),
-                            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
-                        )
-                        .padding(vertical = 18.dp)
-                ) {
-                    Text(
-                        text = "选择艺术滤镜 (点击应用)",
-                        fontSize = 11.sp,
-                        color = Color.White.copy(alpha = 0.5f),
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 20.dp, bottom = 12.dp)
-                    )
-
-                    LazyRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(horizontal = 20.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    FrostedGlassIconButton(
+                        onClick = { showTokenDialog = true }
                     ) {
-                        items(FilterType.entries) { filterItem ->
-                            val isChosen = (activeFilter == filterItem)
-                            Column(
-                                modifier = Modifier
-                                    .width(74.dp)
-                                    .clickable { viewModel.selectFilter(filterItem) },
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                // Live mini thumbnail rendering with applied matrix!
-                                Box(
-                                    modifier = Modifier
-                                        .size(56.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .border(
-                                            width = if (isChosen) 2.dp else 1.dp,
-                                            color = if (isChosen) Color(0xFFFFD54F) else Color.White.copy(alpha = 0.18f),
-                                            shape = RoundedCornerShape(10.dp)
-                                        )
-                                ) {
-                                    AsyncImage(
-                                        model = photoFile,
-                                        contentDescription = filterItem.displayName,
-                                        contentScale = ContentScale.Crop,
-                                        colorFilter = if (filterItem != FilterType.ORIGINAL) {
-                                            ColorFilter.colorMatrix(filterItem.getComposeMatrix())
-                                        } else null,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = filterItem.displayName,
-                                    fontSize = 10.sp,
-                                    color = if (isChosen) Color(0xFFFFD54F) else Color.White,
-                                    fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Normal,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1
-                                )
-                            }
-                        }
+                        Icon(imageVector = Icons.Default.Cloud, contentDescription = "云授权", tint = if (driveAccessToken.isNotEmpty()) Color(0xFFFFD54F) else Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
             }
-
-            // High priority simple confirm delete dialog
-            if (showDeleteConfirm) {
-                AlertDialog(
-                    onDismissRequest = { showDeleteConfirm = false },
-                    title = { Text(text = "删除此照片", fontWeight = FontWeight.Bold, color = Color.White) },
-                    text = { Text(text = "确定要永久删除这张照片吗？该操作不可撤销。", color = Color.White.copy(alpha = 0.8f)) },
-                    containerColor = Color(0xFF1E1E1E),
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                showDeleteConfirm = false
-                                viewModel.deletePhoto(context, photoFile)
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (photos.isEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = "相册为空",
+                            tint = Color.White.copy(alpha = 0.3f),
+                            modifier = Modifier.size(72.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "内置相册为空，开始拍摄吧！",
+                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.5f)
+                        )
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(photos) { photoFile ->
+                            val isFrontPhoto = photoFile.name.startsWith("IMG_FRONT_")
+                            Box(
+                                modifier = Modifier
+                                    .aspectRatio(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        viewModel.selectPhoto(photoFile)
+                                        viewModel.navigateTo(AppScreen.EDITOR)
+                                    }
+                            ) {
+                                AsyncImage(
+                                    model = photoFile,
+                                    contentDescription = "相片缩略图",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .graphicsLayer {
+                                            if (isFrontPhoto) {
+                                                scaleX = -1f
+                                            }
+                                        }
+                                )
+                                if (isFrontPhoto) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(6.dp)
+                                            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("自拍", fontSize = 8.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
-                        ) {
-                            Text(text = "删除", color = Color(0xFFEF5350), fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showDeleteConfirm = false }) {
-                            Text(text = "取消", color = Color.White.copy(alpha = 0.6f))
                         }
                     }
-                )
+                }
+
+                if (isUploading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.5f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFFFFD54F))
+                    }
+                }
             }
         }
+    }
+
+    if (showTokenDialog) {
+        AlertDialog(
+            onDismissRequest = { showTokenDialog = false },
+            title = { Text("Google Drive 授权配置", color = Color.White, fontWeight = FontWeight.Bold) },
+            containerColor = Color(0xFF1E293B),
+            text = {
+                Column {
+                    Text(
+                        "你可以点击下方按钮向系统申请 OAuth 授权，或者在下方手动配置你的 Access Token 直接建立云端存储：",
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            showTokenDialog = false
+                            onStartOAuth()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD54F), contentColor = Color.Black),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("获取 OAuth 授权", fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("输入授权 API Access Token:", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextField(
+                        value = inputToken,
+                        onValueChange = { inputToken = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Black.copy(alpha = 0.3f),
+                            unfocusedContainerColor = Color.Black.copy(alpha = 0.3f),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            cursorColor = Color(0xFFFFD54F)
+                        ),
+                        placeholder = { Text("Google OAuth Token (Bearer ...)", color = Color.White.copy(alpha = 0.4f), fontSize = 12.sp) }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.saveDriveToken(context, inputToken)
+                        showTokenDialog = false
+                        Toast.makeText(context, "授权 Access Token 保存成功！", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
+                ) {
+                    Text("保存配置", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTokenDialog = false }) {
+                    Text("取消", color = Color.White.copy(alpha = 0.6f))
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun PhotoEditorScreen(viewModel: CameraViewModel) {
+    val context = LocalContext.current
+    val selectedPhoto by viewModel.selectedPhoto.collectAsState()
+    val activeFilter by viewModel.selectedFilter.collectAsState()
+    val photos by viewModel.photos.collectAsState()
+    val driveAccessToken by viewModel.driveAccessToken.collectAsState()
+    val isUploading by viewModel.isUploading.collectAsState()
+
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    val photoFile = selectedPhoto
+    if (photoFile == null) {
+        viewModel.navigateTo(AppScreen.ALBUM)
+        return
+    }
+
+    val isFrontPhoto = photoFile.name.startsWith("IMG_FRONT_")
+
+    val backgroundBrush = Brush.linearGradient(
+        colors = listOf(
+            Color(0xFF030712), // slate-950
+            Color(0xFF0F172A), // slate-900
+            Color(0xFF1E293B), // slate-800
+            Color(0xFF1E1B4B)  // indigo-950
+        ),
+        start = Offset(0f, 0f),
+        end = Offset(1000f, 2000f)
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundBrush)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Top controls row with glassmorphism style buttons
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp, horizontal = 20.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Back button
+                FrostedGlassIconButton(
+                    onClick = { viewModel.navigateTo(AppScreen.ALBUM) }
+                ) {
+                    Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "关闭", tint = Color.White, modifier = Modifier.size(20.dp))
+                }
+
+                Text(
+                    text = "相册画布美化",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Drive upload buttons
+                    FrostedGlassIconButton(
+                        onClick = {
+                            viewModel.uploadToDrive(context, photoFile) { success, msg ->
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    ) {
+                        Icon(imageVector = Icons.Default.CloudUpload, contentDescription = "上传至云端", tint = Color(0xFF64B5F6), modifier = Modifier.size(20.dp))
+                    }
+
+                    // Export/Save Photo button
+                    FrostedGlassIconButton(
+                        onClick = {
+                            viewModel.savePhotoToPublicGallery(context, photoFile, activeFilter) { success, msg ->
+                                Toast.makeText(context, msg ?: "操作成功！", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    ) {
+                        Icon(imageVector = Icons.Default.Save, contentDescription = "导出至相册", tint = Color(0xFFFFD54F), modifier = Modifier.size(20.dp))
+                    }
+
+                    // Delete button
+                    FrostedGlassIconButton(
+                        onClick = { showDeleteConfirm = true }
+                    ) {
+                        Icon(imageVector = Icons.Default.Delete, contentDescription = "删除该照片", tint = Color(0xFFEF5350), modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+
+            // Middle area: High Res Photo with active real-time Color Matrix filter and front-mirror scaling
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .background(Color.Transparent),
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = photoFile,
+                    contentDescription = "查看相片",
+                    contentScale = ContentScale.Fit,
+                    colorFilter = if (activeFilter != FilterType.ORIGINAL) {
+                        ColorFilter.colorMatrix(activeFilter.getComposeMatrix())
+                    } else null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            if (isFrontPhoto) {
+                                scaleX = -1f
+                            }
+                        }
+                )
+
+                // Navigation buttons inside the slider gallery
+                val photoIndex = photos.indexOf(photoFile)
+                if (photoIndex > 0) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 16.dp)
+                            .size(46.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.12f))
+                            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                            .clickable { viewModel.selectPhoto(photos[photoIndex - 1]) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(imageVector = Icons.Default.ChevronLeft, contentDescription = "前一张", tint = Color.White, modifier = Modifier.size(24.dp))
+                    }
+                }
+
+                if (photoIndex < photos.size - 1) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 16.dp)
+                            .size(46.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.12f))
+                            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                            .clickable { viewModel.selectPhoto(photos[photoIndex + 1]) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(imageVector = Icons.Default.ChevronRight, contentDescription = "后一张", tint = Color.White, modifier = Modifier.size(24.dp))
+                    }
+                }
+            }
+
+            // Horizontal Filters Selector Reel (frosted block design)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White.copy(alpha = 0.06f))
+                    .border(
+                        width = 1.dp,
+                        color = Color.White.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                    )
+                    .padding(vertical = 18.dp)
+            ) {
+                Text(
+                    text = "选择艺术滤镜 (点击应用)",
+                    fontSize = 11.sp,
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 20.dp, bottom = 12.dp)
+                )
+
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(FilterType.entries) { filterItem ->
+                        val isChosen = (activeFilter == filterItem)
+                        Column(
+                            modifier = Modifier
+                                .width(74.dp)
+                                .clickable { viewModel.selectFilter(filterItem) },
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            // Live mini thumbnail rendering with applied matrix!
+                            Box(
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .border(
+                                        width = if (isChosen) 2.dp else 1.dp,
+                                        color = if (isChosen) Color(0xFFFFD54F) else Color.White.copy(alpha = 0.18f),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                            ) {
+                                AsyncImage(
+                                    model = photoFile,
+                                    contentDescription = filterItem.displayName,
+                                    contentScale = ContentScale.Crop,
+                                    colorFilter = if (filterItem != FilterType.ORIGINAL) {
+                                        ColorFilter.colorMatrix(filterItem.getComposeMatrix())
+                                    } else null,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .graphicsLayer {
+                                            if (isFrontPhoto) {
+                                                scaleX = -1f
+                                            }
+                                        }
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = filterItem.displayName,
+                                fontSize = 10.sp,
+                                color = if (isChosen) Color(0xFFFFD54F) else Color.White,
+                                fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Normal,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (isUploading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = Color(0xFFFFD54F))
+            }
+        }
+    }
+
+    // High priority simple confirm delete dialog
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text(text = "删除此照片", fontWeight = FontWeight.Bold, color = Color.White) },
+            text = { Text(text = "确定要永久删除这张照片吗？该操作不可撤销。", color = Color.White.copy(alpha = 0.8f)) },
+            containerColor = Color(0xFF1E1E1E),
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        viewModel.deletePhoto(context, photoFile)
+                        viewModel.navigateTo(AppScreen.ALBUM)
+                    }
+                ) {
+                    Text(text = "删除", color = Color(0xFFEF5350), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text(text = "取消", color = Color.White.copy(alpha = 0.6f))
+                }
+            }
+        )
     }
 }
 

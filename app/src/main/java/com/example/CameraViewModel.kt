@@ -28,13 +28,29 @@ import java.util.Locale
 enum class AspectRatioMode(val displayName: String, val ratioValue: Float) {
     RATIO_4_3("4:3", 4f / 3f),
     RATIO_16_9("16:9", 16f / 9f),
-    RATIO_1_1("1:1", 1f)
+    RATIO_1_1("1:1", 1f),
+    RATIO_9_16("9:16", 9f / 16f)
+}
+
+enum class AppScreen {
+    CAMERA,
+    ALBUM,
+    EDITOR
 }
 
 class CameraViewModel : ViewModel() {
 
     private val _photos = MutableStateFlow<List<File>>(emptyList())
     val photos: StateFlow<List<File>> = _photos.asStateFlow()
+
+    private val _currentScreen = MutableStateFlow(AppScreen.CAMERA)
+    val currentScreen: StateFlow<AppScreen> = _currentScreen.asStateFlow()
+
+    private val _driveAccessToken = MutableStateFlow("")
+    val driveAccessToken: StateFlow<String> = _driveAccessToken.asStateFlow()
+
+    private val _isUploading = MutableStateFlow(false)
+    val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
 
     private val _lensFacing = MutableStateFlow(CameraSelector.LENS_FACING_BACK)
     val lensFacing: StateFlow<Int> = _lensFacing.asStateFlow()
@@ -71,7 +87,44 @@ class CameraViewModel : ViewModel() {
     private val _shutterFlashChannel = MutableSharedFlow<Unit>()
     val shutterFlashChannel: SharedFlow<Unit> = _shutterFlashChannel.asSharedFlow()
 
+    fun navigateTo(screen: AppScreen) {
+        _currentScreen.value = screen
+    }
+
+    fun saveDriveToken(context: Context, token: String) {
+        _driveAccessToken.value = token
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("drive_access_token", token).apply()
+    }
+
+    fun loadDriveToken(context: Context) {
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        _driveAccessToken.value = prefs.getString("drive_access_token", "") ?: ""
+    }
+
+    fun uploadToDrive(context: Context, file: File, onResult: (Boolean, String) -> Unit) {
+        val token = _driveAccessToken.value
+        if (token.isEmpty()) {
+            onResult(false, "请先在相册中设置 Google Drive 授权 Token！")
+            return
+        }
+        _isUploading.value = true
+        GoogleDriveService.uploadPhoto(
+            file = file,
+            accessToken = token,
+            onSuccess = { fileId ->
+                _isUploading.value = false
+                onResult(true, "上传 Google Drive 成功！文件 id: $fileId")
+            },
+            onError = { exception ->
+                _isUploading.value = false
+                onResult(false, "上传 Google Drive 失败: ${exception.message}")
+            }
+        )
+    }
+
     fun loadLocalPhotos(context: Context) {
+        loadDriveToken(context)
         viewModelScope.launch(Dispatchers.IO) {
             val dir = File(context.filesDir, "captures")
             if (!dir.exists()) dir.mkdirs()
@@ -189,6 +242,8 @@ class CameraViewModel : ViewModel() {
                     return@launch
                 }
 
+                val isFrontPhoto = file.name.startsWith("IMG_FRONT_")
+
                 // Apply rotation metadata if necessary, or load straight
                 val mutableBitmap = Bitmap.createBitmap(
                     originalBitmap.width,
@@ -203,7 +258,15 @@ class CameraViewModel : ViewModel() {
                     paint.colorFilter = android.graphics.ColorMatrixColorFilter(androidMatrix)
                 }
 
-                canvas.drawBitmap(originalBitmap, 0f, 0f, paint)
+                if (isFrontPhoto) {
+                    val mirrorMatrix = android.graphics.Matrix().apply {
+                        postScale(-1f, 1f)
+                        postTranslate(originalBitmap.width.toFloat(), 0f)
+                    }
+                    canvas.drawBitmap(originalBitmap, mirrorMatrix, paint)
+                } else {
+                    canvas.drawBitmap(originalBitmap, 0f, 0f, paint)
+                }
 
                 val resolver = context.contentResolver
                 val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
