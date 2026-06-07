@@ -1,5 +1,8 @@
 package com.example
 
+import android.accounts.Account
+import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
@@ -95,6 +98,48 @@ class CameraViewModel : ViewModel() {
         _driveAccessToken.value = token
         val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("drive_access_token", token).apply()
+    }
+
+    fun retrieveAndSaveDriveToken(context: Context, signInAccount: GoogleSignInAccount, onComplete: (Boolean, String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val email = signInAccount.email ?: ""
+                if (email.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        onComplete(false, "无法获取绑定的 Google 邮箱地址")
+                    }
+                    return@launch
+                }
+                
+                // Construct standard Google account
+                val account = Account(email, "com.google")
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                
+                // Clear any existing cached token first to prevent expired tokens
+                try {
+                    val existingToken = _driveAccessToken.value
+                    if (existingToken.isNotEmpty()) {
+                        GoogleAuthUtil.clearToken(context, existingToken)
+                    }
+                } catch (ignored: Exception) {}
+
+                val token = GoogleAuthUtil.getToken(context, account, scope)
+                if (token != null) {
+                    withContext(Dispatchers.Main) {
+                        saveDriveToken(context, token)
+                        onComplete(true, "谷歌账号授权成功！已绑定 $email")
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        onComplete(false, "未能获取有效的 Google Access Token")
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onComplete(false, "谷歌账号授权失败: ${e.message}")
+                }
+            }
+        }
     }
 
     fun loadDriveToken(context: Context) {

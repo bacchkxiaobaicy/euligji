@@ -69,6 +69,13 @@ import com.example.ui.theme.MyApplicationTheme
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.Scope
+import com.google.android.gms.common.api.ApiException
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
@@ -902,6 +909,35 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     var showTokenDialog by remember { mutableStateOf(false) }
     var inputToken by remember { mutableStateOf(driveAccessToken) }
 
+    // Setup standard Google Sign In configurations client
+    val gso = remember {
+        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail()
+            .requestScopes(Scope("https://www.googleapis.com/auth/drive.file"))
+            .build()
+    }
+    val googleSignInClient = remember {
+        GoogleSignIn.getClient(context, gso)
+    }
+
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            if (account != null) {
+                viewModel.retrieveAndSaveDriveToken(context, account) { success, msg ->
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                }
+            } else {
+                Toast.makeText(context, "谷歌账号授权取消", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "谷歌账号授权失败: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     val backgroundBrush = Brush.linearGradient(
         colors = listOf(
             Color(0xFF030712), // slate-950
@@ -1044,12 +1080,12 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     if (showTokenDialog) {
         AlertDialog(
             onDismissRequest = { showTokenDialog = false },
-            title = { Text("Google Drive 授权配置", color = Color.White, fontWeight = FontWeight.Bold) },
+            title = { Text("Google Drive 备份授权", color = Color.White, fontWeight = FontWeight.Bold) },
             containerColor = Color(0xFF1E293B),
             text = {
                 Column {
                     Text(
-                        "你可以点击下方按钮向系统申请 OAuth 授权，或者在下方手动配置你的 Access Token 直接建立云端存储：",
+                        "推荐使用谷歌账号一键授权，自动绑定相册并上传至云端云盘，安全便捷：",
                         color = Color.White.copy(alpha = 0.8f),
                         fontSize = 13.sp,
                         lineHeight = 18.sp
@@ -1058,15 +1094,27 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
                     Button(
                         onClick = {
                             showTokenDialog = false
-                            onStartOAuth()
+                            googleSignInClient.signOut().addOnCompleteListener {
+                                val signInIntent = googleSignInClient.signInIntent
+                                googleSignInLauncher.launch(signInIntent)
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD54F), contentColor = Color.Black),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("获取 OAuth 授权", fontWeight = FontWeight.Bold)
+                        Icon(imageVector = Icons.Default.Person, contentDescription = "谷歌账号一键授权", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("谷歌账号一键授权", fontWeight = FontWeight.Bold)
                     }
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.15f)))
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("输入授权 API Access Token:", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                    Text(
+                        "备用方案：手动设置 Access Token (开发者选项)",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     TextField(
                         value = inputToken,
