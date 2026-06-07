@@ -929,7 +929,7 @@ fun BuiltInAlbumScreen(viewModel: CameraViewModel, onStartOAuth: () -> Unit) {
     val gso = remember {
         GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(Scope("https://www.googleapis.com/auth/drive.file"))
+            .requestScopes(Scope("https://www.googleapis.com/auth/drive"))
             .build()
     }
     val googleSignInClient = remember {

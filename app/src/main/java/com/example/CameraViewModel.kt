@@ -119,7 +119,7 @@ class CameraViewModel : ViewModel() {
                 
                 // Construct standard Google account
                 val account = Account(email, "com.google")
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive"
                 
                 // Clear any existing cached token first to prevent expired tokens
                 try {
