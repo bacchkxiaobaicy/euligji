@@ -1,0 +1,265 @@
+package com.example
+
+import android.content.ContentValues
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Locale
+
+enum class AspectRatioMode(val displayName: String, val ratioValue: Float) {
+    RATIO_4_3("4:3", 4f / 3f),
+    RATIO_16_9("16:9", 16f / 9f),
+    RATIO_1_1("1:1", 1f)
+}
+
+class CameraViewModel : ViewModel() {
+
+    private val _photos = MutableStateFlow<List<File>>(emptyList())
+    val photos: StateFlow<List<File>> = _photos.asStateFlow()
+
+    private val _lensFacing = MutableStateFlow(CameraSelector.LENS_FACING_BACK)
+    val lensFacing: StateFlow<Int> = _lensFacing.asStateFlow()
+
+    private val _flashMode = MutableStateFlow(ImageCapture.FLASH_MODE_OFF)
+    val flashMode: StateFlow<Int> = _flashMode.asStateFlow()
+
+    private val _aspectRatio = MutableStateFlow(AspectRatioMode.RATIO_4_3)
+    val aspectRatio: StateFlow<AspectRatioMode> = _aspectRatio.asStateFlow()
+
+    private val _isGridVisible = MutableStateFlow(true)
+    val isGridVisible: StateFlow<Boolean> = _isGridVisible.asStateFlow()
+
+    private val _zoomRatio = MutableStateFlow(1f)
+    val zoomRatio: StateFlow<Float> = _zoomRatio.asStateFlow()
+
+    private val _timerSeconds = MutableStateFlow(0) // 0, 3, 10
+    val timerSeconds: StateFlow<Int> = _timerSeconds.asStateFlow()
+
+    private val _isCountdownRunning = MutableStateFlow(false)
+    val isCountdownRunning: StateFlow<Boolean> = _isCountdownRunning.asStateFlow()
+
+    private val _countdownRemaining = MutableStateFlow(0)
+    val countdownRemaining: StateFlow<Int> = _countdownRemaining.asStateFlow()
+
+    // Active full screen photo modal
+    private val _selectedPhoto = MutableStateFlow<File?>(null)
+    val selectedPhoto: StateFlow<File?> = _selectedPhoto.asStateFlow()
+
+    private val _selectedFilter = MutableStateFlow(FilterType.ORIGINAL)
+    val selectedFilter: StateFlow<FilterType> = _selectedFilter.asStateFlow()
+
+    // Trigger local screen shutter flash animation in flow
+    private val _shutterFlashChannel = MutableSharedFlow<Unit>()
+    val shutterFlashChannel: SharedFlow<Unit> = _shutterFlashChannel.asSharedFlow()
+
+    fun loadLocalPhotos(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val dir = File(context.filesDir, "captures")
+            if (!dir.exists()) dir.mkdirs()
+            val files = dir.listFiles { file ->
+                val ext = file.extension.lowercase()
+                ext == "jpg" || ext == "jpeg"
+            }?.sortedByDescending { it.lastModified() } ?: emptyList()
+            _photos.value = files
+        }
+    }
+
+    fun toggleLens() {
+        _lensFacing.value = if (_lensFacing.value == CameraSelector.LENS_FACING_BACK) {
+            CameraSelector.LENS_FACING_FRONT
+        } else {
+            CameraSelector.LENS_FACING_BACK
+        }
+    }
+
+    fun toggleFlash() {
+        _flashMode.value = when (_flashMode.value) {
+            ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_ON
+            ImageCapture.FLASH_MODE_ON -> ImageCapture.FLASH_MODE_AUTO
+            else -> ImageCapture.FLASH_MODE_OFF
+        }
+    }
+
+    fun setAspectRatio(mode: AspectRatioMode) {
+        _aspectRatio.value = mode
+    }
+
+    fun toggleGrid() {
+        _isGridVisible.value = !_isGridVisible.value
+    }
+
+    fun setZoom(ratio: Float) {
+        _zoomRatio.value = ratio.coerceIn(1f, 8f)
+    }
+
+    fun toggleTimer() {
+        _timerSeconds.value = when (_timerSeconds.value) {
+            0 -> 3
+            3 -> 10
+            else -> 0
+        }
+    }
+
+    fun selectPhoto(file: File?) {
+        _selectedPhoto.value = file
+        // Reset filter to Original when opening a photo
+        _selectedFilter.value = FilterType.ORIGINAL
+    }
+
+    fun selectFilter(filter: FilterType) {
+        _selectedFilter.value = filter
+    }
+
+    fun triggerShutterFlash() {
+        viewModelScope.launch {
+            _shutterFlashChannel.emit(Unit)
+        }
+    }
+
+    fun startTimerCountdown(onFinished: () -> Unit) {
+        val seconds = _timerSeconds.value
+        if (seconds == 0) {
+            onFinished()
+            return
+        }
+
+        viewModelScope.launch {
+            _isCountdownRunning.value = true
+            _countdownRemaining.value = seconds
+            while (_countdownRemaining.value > 0) {
+                delay(1000)
+                _countdownRemaining.value -= 1
+            }
+            _isCountdownRunning.value = false
+            onFinished()
+        }
+    }
+
+    fun addCapturedPhoto(context: Context, file: File) {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Re-load to append and update UI flow
+            loadLocalPhotos(context)
+        }
+    }
+
+    fun deletePhoto(context: Context, file: File) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (file.exists()) {
+                file.delete()
+            }
+            loadLocalPhotos(context)
+            if (_selectedPhoto.value?.absolutePath == file.absolutePath) {
+                withContext(Dispatchers.Main) {
+                    _selectedPhoto.value = null
+                }
+            }
+        }
+    }
+
+    fun savePhotoToPublicGallery(
+        context: Context,
+        file: File,
+        filter: FilterType,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val originalBitmap = BitmapFactory.decodeFile(file.absolutePath)
+                if (originalBitmap == null) {
+                    withContext(Dispatchers.Main) { onResult(false, "解码原始图片失败") }
+                    return@launch
+                }
+
+                // Apply rotation metadata if necessary, or load straight
+                val mutableBitmap = Bitmap.createBitmap(
+                    originalBitmap.width,
+                    originalBitmap.height,
+                    Bitmap.Config.ARGB_8888
+                )
+                val canvas = android.graphics.Canvas(mutableBitmap)
+                val paint = android.graphics.Paint()
+
+                if (filter != FilterType.ORIGINAL) {
+                    val androidMatrix = android.graphics.ColorMatrix(filter.getAndroidMatrixValues())
+                    paint.colorFilter = android.graphics.ColorMatrixColorFilter(androidMatrix)
+                }
+
+                canvas.drawBitmap(originalBitmap, 0f, 0f, paint)
+
+                val resolver = context.contentResolver
+                val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
+                val displayName = "Camera_${timeStamp}.jpg"
+
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Camera")
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                }
+
+                val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                } else {
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                }
+
+                val uri = resolver.insert(collection, contentValues)
+                if (uri == null) {
+                    withContext(Dispatchers.Main) { onResult(false, "创建媒体存储路径失败") }
+                    return@launch
+                }
+
+                resolver.openOutputStream(uri).use { outputStream ->
+                    if (outputStream == null) {
+                        withContext(Dispatchers.Main) { onResult(false, "打开媒体写入流失败") }
+                        return@use
+                    }
+                    val success = mutableBitmap.compress(Bitmap.CompressFormat.JPEG, 97, outputStream)
+                    if (!success) {
+                        withContext(Dispatchers.Main) { onResult(false, "JPEG图片压缩失败") }
+                        return@use
+                    }
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentValues.clear()
+                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    resolver.update(uri, contentValues, null, null)
+                }
+
+                originalBitmap.recycle()
+                mutableBitmap.recycle()
+
+                withContext(Dispatchers.Main) {
+                    onResult(true, "照片已成功保存至系统相册！")
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onResult(false, "保存遇到错误: ${e.message}")
+                }
+            }
+        }
+    }
+}
