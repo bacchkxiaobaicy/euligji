@@ -14,6 +14,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.sin
+import org.json.JSONObject
+import org.json.JSONArray
+import java.io.File
+import okhttp3.OkHttpClient
+import okhttp3.Request
+
+// Music source model for synchronization (NetEase playlist or third party custom JSON endpoint)
+data class MusicSource(
+    val id: String, // Playlist ID for NetEase, web standard URL for JSON custom source
+    val name: String,
+    val type: String, // "netease" or "json"
+    val songCount: Int = 0
+)
 
 // Player states
 enum class PlaybackState {
@@ -53,6 +66,13 @@ data class LyricsLine(
 )
 
 class MusicViewModel : ViewModel() {
+
+    // Stored list of custom sources and imported tracks
+    private val _sources = MutableStateFlow<List<MusicSource>>(emptyList())
+    val sources: StateFlow<List<MusicSource>> = _sources.asStateFlow()
+
+    private val importedTracksBySource = mutableMapOf<String, List<Track>>()
+    private var presetTracks: List<Track> = emptyList()
 
     // Preset songs list (Offline synths + direct royalty-free URLs)
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
@@ -223,6 +243,7 @@ class MusicViewModel : ViewModel() {
                 genre = "Smooth Jazz"
             )
         )
+        presetTracks = list
         _tracks.value = list
     }
 
@@ -563,6 +584,416 @@ class MusicViewModel : ViewModel() {
 
         synthEngine?.stop()
         synthEngine = null
+    }
+
+    private fun mergeAndPublishTracks() {
+        val allTracks = ArrayList<Track>(presetTracks)
+        for (trackList in importedTracksBySource.values) {
+            allTracks.addAll(trackList)
+        }
+        _tracks.value = allTracks
+    }
+
+    private fun saveDataToDisk(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val root = org.json.JSONObject()
+                
+                // Save sources
+                val sourcesArray = org.json.JSONArray()
+                for (src in _sources.value) {
+                    val srcObj = org.json.JSONObject()
+                    srcObj.put("id", src.id)
+                    srcObj.put("name", src.name)
+                    srcObj.put("type", src.type)
+                    srcObj.put("songCount", src.songCount)
+                    sourcesArray.put(srcObj)
+                }
+                root.put("sources", sourcesArray)
+
+                // Save songs
+                val tracksArray = org.json.JSONArray()
+                for ((srcId, tracks) in importedTracksBySource) {
+                    for (t in tracks) {
+                        val tObj = org.json.JSONObject()
+                        tObj.put("sourceId", srcId)
+                        tObj.put("id", t.id)
+                        tObj.put("title", t.title)
+                        tObj.put("artist", t.artist)
+                        tObj.put("coverColorStart", colorToHex(t.coverColorStart))
+                        tObj.put("coverColorEnd", colorToHex(t.coverColorEnd))
+                        tObj.put("url", t.url)
+                        tObj.put("genre", t.genre)
+                        tObj.put("lyrics", t.lyrics)
+                        tracksArray.put(tObj)
+                    }
+                }
+                root.put("tracks", tracksArray)
+
+                val file = java.io.File(context.filesDir, "imported_music_data.json")
+                file.writeText(root.toString())
+                Log.d("MusicViewModel", "Saved sources and tracks to disk.")
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun loadDataFromDisk(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val file = java.io.File(context.filesDir, "imported_music_data.json")
+                if (!file.exists()) return@launch
+
+                val jsonStr = file.readText()
+                val root = org.json.JSONObject(jsonStr)
+
+                // Parse sources
+                val sourcesList = mutableListOf<MusicSource>()
+                val sourcesArray = root.optJSONArray("sources")
+                if (sourcesArray != null) {
+                    for (i in 0 until sourcesArray.length()) {
+                        val obj = sourcesArray.getJSONObject(i)
+                        sourcesList.add(
+                            MusicSource(
+                                id = obj.optString("id"),
+                                name = obj.optString("name"),
+                                type = obj.optString("type"),
+                                songCount = obj.optInt("songCount")
+                            )
+                        )
+                    }
+                }
+
+                // Parse tracks
+                val trackMap = mutableMapOf<String, MutableList<Track>>()
+                val tracksArray = root.optJSONArray("tracks")
+                if (tracksArray != null) {
+                    for (i in 0 until tracksArray.length()) {
+                        val obj = tracksArray.getJSONObject(i)
+                        val sourceId = obj.optString("sourceId")
+                        val id = obj.optInt("id")
+                        val title = obj.optString("title")
+                        val artist = obj.optString("artist")
+                        val hexStart = obj.optString("coverColorStart")
+                        val hexEnd = obj.optString("coverColorEnd")
+                        val url = obj.optString("url")
+                        val genre = obj.optString("genre")
+                        val lyrics = obj.optString("lyrics")
+
+                        val track = Track(
+                            id = id,
+                            title = title,
+                            artist = artist,
+                            coverColorStart = hexToColor(hexStart),
+                            coverColorEnd = hexToColor(hexEnd),
+                            url = url,
+                            genre = genre,
+                            lyrics = lyrics
+                        )
+
+                        if (!trackMap.containsKey(sourceId)) {
+                            trackMap[sourceId] = mutableListOf()
+                        }
+                        trackMap[sourceId]?.add(track)
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    _sources.value = sourcesList
+                    importedTracksBySource.clear()
+                    for ((k, v) in trackMap) {
+                        importedTracksBySource[k] = v
+                    }
+                    mergeAndPublishTracks()
+                    
+                    // Default track selection fallback
+                    if (_currentTrack.value == null) {
+                        _tracks.value.firstOrNull()?.let {
+                            selectTrack(it, playImmediately = false)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun colorToHex(color: Color): String {
+        return String.format("#%08X", color.value.toLong() and 0xFFFFFFFFL)
+    }
+
+    private fun hexToColor(hex: String): Color {
+        return try {
+            val cleanHex = if (hex.startsWith("#")) hex.substring(1) else hex
+            Color(java.lang.Long.parseLong(cleanHex, 16))
+        } catch (e: Exception) {
+            Color.Gray
+        }
+    }
+
+    fun deleteMusicSource(context: Context, sourceId: String) {
+        viewModelScope.launch(Dispatchers.Main) {
+            val updatedSources = _sources.value.filter { it.id != sourceId }
+            _sources.value = updatedSources
+            importedTracksBySource.remove(sourceId)
+            mergeAndPublishTracks()
+            saveDataToDisk(context)
+            
+            val current = _currentTrack.value
+            if (current != null) {
+                val isStillAvailable = _tracks.value.any { it.id == current.id }
+                if (!isStillAvailable) {
+                    stopAllPlayback()
+                    _currentTrack.value = _tracks.value.firstOrNull()
+                }
+            }
+        }
+    }
+
+    private fun updateAndSaveImportedSource(
+        context: Context,
+        source: MusicSource,
+        tracks: List<Track>
+    ) {
+        val existingList = _sources.value.toMutableList()
+        val index = existingList.indexOfFirst { it.id == source.id }
+        if (index != -1) {
+            existingList[index] = source
+        } else {
+            existingList.add(source)
+        }
+        _sources.value = existingList
+        importedTracksBySource[source.id] = tracks
+        mergeAndPublishTracks()
+        saveDataToDisk(context)
+    }
+
+    private fun generateColorFromSeed(hue: Float): Color {
+        val h = hue % 360f
+        val x = (1f - Math.abs((h / 60f) % 2f - 1f))
+        val (r, g, b) = when {
+            h < 60f -> Triple(1f, x, 0f)
+            h < 120f -> Triple(x, 1f, 0f)
+            h < 180f -> Triple(0f, 1f, x)
+            h < 240f -> Triple(0f, x, 1f)
+            h < 300f -> Triple(x, 0f, 1f)
+            else -> Triple(1f, 0f, x)
+        }
+        val bgRed = (r * 110 + 20).toInt().coerceIn(0, 255)
+        val bgGreen = (g * 110 + 20).toInt().coerceIn(0, 255)
+        val bgBlue = (b * 110 + 20).toInt().coerceIn(0, 255)
+        return Color(bgRed, bgGreen, bgBlue, 255)
+    }
+
+    fun syncMusicSource(
+        context: Context,
+        source: MusicSource,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val client = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+
+                Log.d("MusicViewModel", "Starting sync for ${source.type} source: ${source.id}")
+
+                if (source.type == "netease") {
+                    val url = "https://music.163.com/api/v1/playlist/detail?id=${source.id}"
+                    val request = okhttp3.Request.Builder()
+                        .url(url)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        .build()
+
+                    val response = client.newCall(request).execute()
+                    if (!response.isSuccessful) {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "网易云歌单获取失败 (HTTP ${response.code})")
+                        }
+                        return@launch
+                    }
+
+                    val bodyStr = response.body?.string() ?: ""
+                    val jsonObj = org.json.JSONObject(bodyStr)
+                    if (jsonObj.optInt("code", 200) != 200) {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "网易云API报错: code=${jsonObj.optInt("code")}")
+                        }
+                        return@launch
+                    }
+
+                    val playlistObj = jsonObj.optJSONObject("playlist") ?: jsonObj.optJSONObject("result")
+                    if (playlistObj == null) {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "歌单返回节点解析失败")
+                        }
+                        return@launch
+                    }
+
+                    val playlistName = playlistObj.optString("name", "网易云歌单 ${source.id}").ifEmpty { "网易云歌单 ${source.id}" }
+                    val tracksArray = playlistObj.optJSONArray("tracks") ?: org.json.JSONArray()
+                    if (tracksArray.length() == 0) {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "此歌单尚无任何歌曲")
+                        }
+                        return@launch
+                    }
+
+                    val parsedTracks = mutableListOf<Track>()
+                    for (i in 0 until tracksArray.length()) {
+                        val trackObj = tracksArray.getJSONObject(i)
+                        val songId = trackObj.optString("id", "")
+                        if (songId.isEmpty()) continue
+
+                        val title = trackObj.optString("name", "未命名单曲")
+                        
+                        val artistsList = mutableListOf<String>()
+                        val arArray = trackObj.optJSONArray("ar") ?: trackObj.optJSONArray("artists")
+                        if (arArray != null) {
+                            for (j in 0 until arArray.length()) {
+                                artistsList.add(arArray.getJSONObject(j).optString("name", "群星"))
+                            }
+                        }
+                        val artist = if (artistsList.isEmpty()) "网易云歌手" else artistsList.joinToString(" & ")
+                        val mp3Url = "https://music.163.com/song/media/outer/url?id=$songId.mp3"
+
+                        val internalId = (mp3Url.hashCode() and 0x7FFFFFFF)
+                        val colorHueStart = (title.hashCode() % 360).toFloat()
+                        val startColor = generateColorFromSeed(colorHueStart)
+                        val endColor = generateColorFromSeed((colorHueStart + 120f) % 360f)
+
+                        parsedTracks.add(
+                            Track(
+                                id = internalId,
+                                title = title,
+                                artist = artist,
+                                coverColorStart = startColor,
+                                coverColorEnd = endColor,
+                                url = mp3Url,
+                                genre = "网易云",
+                                lyrics = "[00:00] 同步自网易云歌单 《$playlistName》\n[00:03] 《$title》 - $artist\n[00:08] (此链接由官方多媒体网关直连播放)"
+                            )
+                        )
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        updateAndSaveImportedSource(
+                            context,
+                            source.copy(name = playlistName, songCount = parsedTracks.size),
+                            parsedTracks
+                        )
+                        onResult(true, "同步成功！导入了 ${parsedTracks.size} 首歌曲")
+                    }
+
+                } else if (source.type == "json") {
+                    val request = okhttp3.Request.Builder()
+                        .url(source.id)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        .build()
+
+                    val response = client.newCall(request).execute()
+                    if (!response.isSuccessful) {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "第三方JSON源请求失败 (HTTP ${response.code})")
+                        }
+                        return@launch
+                    }
+
+                    val bodyStr = response.body?.string() ?: ""
+                    var arrayToParse: org.json.JSONArray? = null
+
+                    val trimmed = bodyStr.trim()
+                    if (trimmed.startsWith("[")) {
+                        arrayToParse = org.json.JSONArray(trimmed)
+                    } else if (trimmed.startsWith("{")) {
+                        val rootObj = org.json.JSONObject(trimmed)
+                        val prospectiveKeys = listOf("tracks", "songs", "data", "list", "musicList")
+                        for (key in prospectiveKeys) {
+                            if (rootObj.has(key)) {
+                                arrayToParse = rootObj.optJSONArray(key)
+                                if (arrayToParse != null) break
+                            }
+                        }
+                    }
+
+                    if (arrayToParse == null || arrayToParse.length() == 0) {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "未能解析到包含歌曲的JSON数组")
+                        }
+                        return@launch
+                    }
+
+                    val parsedTracks = mutableListOf<Track>()
+                    for (i in 0 until arrayToParse.length()) {
+                        val obj = arrayToParse.getJSONObject(i)
+                        val title = obj.optString("title", "").ifEmpty {
+                            obj.optString("name", "").ifEmpty {
+                                obj.optString("songName", "第三方歌曲")
+                            }
+                        }
+                        val url = obj.optString("url", "").ifEmpty {
+                            obj.optString("audio", "").ifEmpty {
+                                obj.optString("src", "").ifEmpty {
+                                    obj.optString("link", "")
+                                }
+                            }
+                        }
+                        if (url.isEmpty()) continue
+
+                        val artist = obj.optString("artist", "").ifEmpty {
+                            obj.optString("singer", "").ifEmpty {
+                                obj.optString("author", "未知演播人")
+                            }
+                        }
+
+                        val lyrics = obj.optString("lyrics", "").ifEmpty {
+                            obj.optString("lrc", "").ifEmpty {
+                                "[00:00] $title - $artist\n[00:05] (第三方 JSON 音乐源，未提供歌词)"
+                            }
+                        }
+
+                        val genre = obj.optString("genre", "").ifEmpty {
+                            obj.optString("style", "第三方JSON")
+                        }
+
+                        val internalId = (url.hashCode() and 0x7FFFFFFF)
+                        val colorHueStart = (title.hashCode() % 360).toFloat()
+                        val startColor = generateColorFromSeed(colorHueStart)
+                        val endColor = generateColorFromSeed((colorHueStart + 120f) % 360f)
+
+                        parsedTracks.add(
+                            Track(
+                                id = internalId,
+                                title = title,
+                                artist = artist,
+                                coverColorStart = startColor,
+                                coverColorEnd = endColor,
+                                url = url,
+                                genre = genre,
+                                lyrics = lyrics
+                            )
+                        )
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        updateAndSaveImportedSource(
+                            context,
+                            source.copy(songCount = parsedTracks.size),
+                            parsedTracks
+                        )
+                        onResult(true, "导入成功！新增/同步了 ${parsedTracks.size} 首第三方歌曲")
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onResult(false, "请求异常: ${e.localizedMessage ?: "网络中断"}")
+                }
+            }
+        }
     }
 
     override fun onCleared() {

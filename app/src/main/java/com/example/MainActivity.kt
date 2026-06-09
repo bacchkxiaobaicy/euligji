@@ -15,7 +15,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -87,8 +89,14 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
 
     var activeTab by remember { mutableStateOf("Square") } // "Square" or "Player"
     var showPlayerLyrics by remember { mutableStateOf(false) } // Toggle center vinyl with lyrics
+    var showSourceManager by remember { mutableStateOf(false) } // Toggle source management overlay
 
     val context = LocalContext.current
+
+    // Automatically restore saved imported music sources on startup
+    LaunchedEffect(Unit) {
+        viewModel.loadDataFromDisk(context)
+    }
 
     // Error toast feedback
     LaunchedEffect(playbackState) {
@@ -374,7 +382,8 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                             onPlayTrack = { track ->
                                 viewModel.selectTrack(track)
                                 activeTab = "Player"
-                            }
+                            },
+                            onManageSourcesClick = { showSourceManager = true }
                         )
 
                         "Player" -> PlayerDashboardPane(
@@ -393,6 +402,12 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                     }
                 }
             }
+            if (showSourceManager) {
+                SourceManagerDialog(
+                    viewModel = viewModel,
+                    onDismiss = { showSourceManager = false }
+                )
+            }
         }
     }
 }
@@ -406,7 +421,8 @@ fun MusicSquarePane(
     favorites: Set<Int>,
     currentTrack: Track?,
     playbackState: PlaybackState,
-    onPlayTrack: (Track) -> Unit
+    onPlayTrack: (Track) -> Unit,
+    onManageSourcesClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -451,6 +467,41 @@ fun MusicSquarePane(
                 unfocusedTextColor = Color.White
             )
         )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "所有音轨曲目 (${tracks.size})",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+
+            // Dynamic Source Manager Trigger Button
+            Button(
+                onClick = onManageSourcesClick,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF00FFCC).copy(alpha = 0.15f),
+                    contentColor = Color(0xFF00FFCC)
+                ),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                modifier = Modifier.testTag("manage_sources_btn").height(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Cloud,
+                    contentDescription = "源管理",
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("音源同步 ⚙️", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
 
         // Intro offline synthesizer invitation
         Box(
@@ -1219,4 +1270,384 @@ fun formatTimeline(milliseconds: Long): String {
     val seconds = (milliseconds / 1000) % 60
     val minutes = (milliseconds / (1000 * 60)) % 60
     return String.format("%02d:%02d", minutes, seconds)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun SourceManagerDialog(
+    viewModel: MusicViewModel,
+    onDismiss: () -> Unit
+) {
+    val sources by viewModel.sources.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    var neteaseId by remember { mutableStateOf("") }
+    var jsonUrl by remember { mutableStateOf("") }
+    var jsonName by remember { mutableStateOf("") }
+
+    var feedbackMsg by remember { mutableStateOf("") }
+    var isLoading by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = onDismiss
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color(0xFF14151B))
+                .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(24.dp))
+                .padding(20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 580.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Filled.Cloud,
+                            contentDescription = "音源",
+                            tint = Color(0xFF00FFCC),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "音乐源同步管理",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "关闭",
+                            tint = Color.White.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+
+                // Inner content
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Option A: NetEase Playlist sync
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = "同步网易云音乐歌单",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00FFCC)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "输入歌单ID (拉取网易云公开或自建歌单ID即可同步)：",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.5f)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = neteaseId,
+                                onValueChange = { neteaseId = it },
+                                placeholder = { Text("例如：1954326500", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF00FFCC).copy(alpha = 0.6f),
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    if (neteaseId.trim().isEmpty()) {
+                                        feedbackMsg = "请输入歌单ID"
+                                        return@Button
+                                    }
+                                    isLoading = true
+                                    feedbackMsg = "正在链接网易云多媒体服务器..."
+                                    val source = MusicSource(neteaseId.trim(), "网易云歌单", "netease")
+                                    viewModel.syncMusicSource(context, source) { success, msg ->
+                                        isLoading = false
+                                        feedbackMsg = msg
+                                        if (success) {
+                                            neteaseId = ""
+                                        }
+                                    }
+                                },
+                                enabled = !isLoading,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(36.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF00FFCC),
+                                    contentColor = Color.Black,
+                                    disabledContainerColor = Color.White.copy(alpha = 0.12f)
+                                )
+                            ) {
+                                Text("立即拉取并同步", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Option B: Custom standard JSON Audio endpoints
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = "导入第三方 JSON 音乐源",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00FFCC)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "输入包含 [{title, artist, url, [lyrics]}] 的公开源链接：",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.5f)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = jsonName,
+                                onValueChange = { jsonName = it },
+                                placeholder = { Text("音乐源备注：如「极客发烧友」", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF00FFCC).copy(alpha = 0.6f),
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = jsonUrl,
+                                onValueChange = { jsonUrl = it },
+                                placeholder = { Text("https://example.com/music.json", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF00FFCC).copy(alpha = 0.6f),
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    if (jsonUrl.trim().isEmpty()) {
+                                        feedbackMsg = "请输入JSON数据连接"
+                                        return@Button
+                                    }
+                                    val name = jsonName.trim().ifEmpty { "自定义音源" }
+                                    isLoading = true
+                                    feedbackMsg = "正在解析远程JSON节点..."
+                                    val source = MusicSource(jsonUrl.trim(), name, "json")
+                                    viewModel.syncMusicSource(context, source) { success, msg ->
+                                        isLoading = false
+                                        feedbackMsg = msg
+                                        if (success) {
+                                            jsonUrl = ""
+                                            jsonName = ""
+                                        }
+                                    }
+                                },
+                                enabled = !isLoading,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(36.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF00FFCC),
+                                    contentColor = Color.Black,
+                                    disabledContainerColor = Color.White.copy(alpha = 0.12f)
+                                )
+                            ) {
+                                Text("立即同步解析", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Section C: List of already imported packages/sources
+                    item {
+                        Column {
+                            Text(
+                                text = "已同步的外部音源 (${sources.size})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            if (sources.isEmpty()) {
+                                Text(
+                                    text = "暂未导入任何外部音源，上述通道输入一键添加！",
+                                    fontSize = 11.sp,
+                                    color = Color.White.copy(alpha = 0.35f),
+                                    modifier = Modifier.padding(vertical = 12.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    items(sources) { src ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.White.copy(alpha = 0.02f), RoundedCornerShape(12.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = src.name,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                val labelType = if (src.type == "netease") "网易云歌单ID: " else "JSON数据源： "
+                                Text(
+                                    text = "$labelType${src.id}",
+                                    fontSize = 9.sp,
+                                    color = Color.White.copy(alpha = 0.4f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .background(Color(0xFF00FFCC).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "${src.songCount}首曲目",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF00FFCC)
+                                    )
+                                }
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Re-sync button
+                                IconButton(
+                                    onClick = {
+                                        isLoading = true
+                                        feedbackMsg = "正在重新同步【${src.name}】..."
+                                        viewModel.syncMusicSource(context, src) { _, msg ->
+                                            isLoading = false
+                                            feedbackMsg = msg
+                                        }
+                                    },
+                                    enabled = !isLoading,
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Sync,
+                                        contentDescription = "同步",
+                                        tint = Color(0xFF00FFCC).copy(alpha = 0.8f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(4.dp))
+
+                                // Delete button
+                                IconButton(
+                                    onClick = {
+                                        viewModel.deleteMusicSource(context, src.id)
+                                        feedbackMsg = "已成功移除：[${src.name}]"
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Delete,
+                                        contentDescription = "删除",
+                                        tint = Color.Red.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Feedback panel
+                if (feedbackMsg.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .background(Color.White.copy(alpha = 0.04f), RoundedCornerShape(8.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+                            .padding(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    color = Color(0xFF00FFCC),
+                                    strokeWidth = 1.5.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text(
+                                text = feedbackMsg,
+                                fontSize = 10.sp,
+                                color = if (feedbackMsg.contains("成功") || feedbackMsg.contains("导入") || feedbackMsg.contains("新增")) {
+                                    Color(0xFF00FFCC)
+                                } else if (feedbackMsg.contains("错误") || feedbackMsg.contains("失败") || feedbackMsg.contains("异常")) {
+                                    Color.Red.copy(alpha = 0.82f)
+                                } else {
+                                    Color.White.copy(alpha = 0.8f)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
