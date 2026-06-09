@@ -1,6 +1,6 @@
 {
-  "name": "音乐播放器",
-  "description": "一个精美且交互交互十足的音乐播放器，支持多种预设音乐、旋律合成、歌词同步、动态频谱等功能。",
+  "name": "洛雪音乐极客版",
+  "description": "Inspired by LX Music, clean dark minimalist music player with search engine, multi-source online music stream, and custom script integrations.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

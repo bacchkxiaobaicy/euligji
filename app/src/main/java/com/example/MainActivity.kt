@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.window.Dialog
@@ -87,37 +88,40 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val visualizerBars by viewModel.visualizerBars.collectAsStateWithLifecycle()
 
-    var activeTab by remember { mutableStateOf("Square") } // "Square" or "Player"
-    var showPlayerLyrics by remember { mutableStateOf(false) } // Toggle center vinyl with lyrics
-    var showSourceManager by remember { mutableStateOf(false) } // Toggle source management overlay
+    val currentThemeId by viewModel.currentThemeId.collectAsStateWithLifecycle()
+    val customScripts by viewModel.customScripts.collectAsStateWithLifecycle()
+    val selectedSearchSource by viewModel.selectedSearchSource.collectAsStateWithLifecycle()
+    val sources by viewModel.sources.collectAsStateWithLifecycle()
+
+    var activeTab by remember { mutableStateOf("Search") } // "Search", "List", "Settings"
+    var showPlayerLyrics by remember { mutableStateOf(false) } // Toggle vinyl center disc with scrolling text
+    var isPlayerExpanded by remember { mutableStateOf(false) } // Expand full-screen vinyl player
 
     val context = LocalContext.current
+    val activeTheme = appThemes.find { it.id == currentThemeId } ?: appThemes.first()
+    val accentColor = activeTheme.accentColor
 
-    // Automatically restore saved imported music sources on startup
+    // Restore saved settings, custom scripts and custom sources on launch
     LaunchedEffect(Unit) {
-        viewModel.loadDataFromDisk(context)
+        viewModel.loadAllPersistentData(context)
     }
 
-    // Error toast feedback
     LaunchedEffect(playbackState) {
         if (playbackState == PlaybackState.ERROR) {
             Toast.makeText(
                 context,
-                "播放出错，可能网络连接受限。请尝试顶部算法内置「本地合成器」曲目进行离线听歌！",
+                "音频加载超时，可能受到物理网络限制。请在「设置」导入其他 JSON 源，或体验离线发音内置算法曲目！",
                 Toast.LENGTH_LONG
             ).show()
         }
     }
 
-    // Dynamic background brush from current active song profile colors
-    val themeColorStart = currentTrack?.coverColorStart ?: Color(0xFF1F1C2C)
-    val themeColorEnd = currentTrack?.coverColorEnd ?: Color(0xFF928DAB)
-
+    // Dynamic linear blending gradients behind glassy elements
     val backgroundBrush = Brush.linearGradient(
         colors = listOf(
-            themeColorStart.copy(alpha = 0.28f),
-            themeColorEnd.copy(alpha = 0.12f),
-            Color(0xFF0D0D14)
+            activeTheme.backgroundColorStart.copy(alpha = 0.42f),
+            activeTheme.backgroundColorEnd.copy(alpha = 0.18f),
+            Color(0xFF090A0E)
         ),
         start = Offset(0f, 0f),
         end = Offset(1000f, 2000f)
@@ -132,7 +136,7 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
             modifier = Modifier.fillMaxSize(),
             containerColor = Color.Transparent,
             topBar = {
-                // Sleek Header Controls
+                // Main Header Title Area
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -146,22 +150,27 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                     ) {
                         Column {
                             Text(
-                                text = "SOUNDSCAPE",
+                                text = "洛雪音乐 • 极客重塑版",
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White.copy(alpha = 0.45f),
+                                fontWeight = FontWeight.Black,
+                                color = accentColor,
                                 letterSpacing = 2.sp
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = if (activeTab == "Square") "音乐广场" else "正在播放",
+                                text = when (activeTab) {
+                                    "Search" -> "搜索音乐"
+                                    "List" -> "多源歌单"
+                                    "Settings" -> "音源与主题"
+                                    else -> "洛雪音乐"
+                                },
                                 fontSize = 22.sp,
-                                fontWeight = FontWeight.Black,
+                                fontWeight = FontWeight.Bold,
                                 color = Color.White
                             )
                         }
 
-                        // Floating badge for active synthesizer or MP3 play state
+                        // Floating dynamic badge stating active audio engine tag
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
@@ -169,18 +178,17 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                                 .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
                                 .padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            val activeGenre = currentTrack?.genre ?: "Zen Synth"
                             Box(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .background(
-                                        if (playbackState == PlaybackState.PLAYING) Color(0xFF00FFCC) else Color.Gray,
+                                        if (playbackState == PlaybackState.PLAYING) accentColor else Color.Gray,
                                         CircleShape
                                     )
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = activeGenre,
+                                text = currentTrack?.genre ?: "内置合成",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = Color.White
@@ -190,20 +198,20 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                 }
             },
             bottomBar = {
-                // Navigation Rails & Mini-Player
+                // Bottom Floating Control Deck & Navigation Tab Row
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .background(
                             Brush.verticalGradient(
-                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f), Color.Black)
+                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f), Color.Black)
                             )
                         )
                 ) {
-                    // Mini player floating bar when on Library screen
+                    // Small floating Mini-Player visible when player window is docked / folded down
                     AnimatedVisibility(
-                        visible = activeTab == "Square" && currentTrack != null,
+                        visible = !isPlayerExpanded && currentTrack != null,
                         enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                         exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
                     ) {
@@ -213,9 +221,9 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                                     .fillMaxWidth()
                                     .padding(horizontal = 16.dp, vertical = 8.dp)
                                     .clip(RoundedCornerShape(16.dp))
-                                    .background(Color.White.copy(alpha = 0.06f))
-                                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
-                                    .clickable { activeTab = "Player" }
+                                    .background(Color.White.copy(alpha = 0.07f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                                    .clickable { isPlayerExpanded = true }
                                     .padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
@@ -224,7 +232,6 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    // Glassy disc preview icon
                                     Box(
                                         modifier = Modifier
                                             .size(40.dp)
@@ -266,7 +273,6 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    // Play Mini action
                                     IconButton(
                                         onClick = { viewModel.togglePlayPause() },
                                         modifier = Modifier.testTag("mini_play_pause_button")
@@ -275,8 +281,8 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                                         Icon(
                                             imageVector = icon,
                                             contentDescription = "播放暂停",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(24.dp)
+                                            tint = accentColor,
+                                            modifier = Modifier.size(26.dp)
                                         )
                                     }
 
@@ -298,9 +304,9 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                         }
                     }
 
-                    // Tidy system bars
                     Spacer(modifier = Modifier.height(4.dp))
 
+                    // Classic Tab Swapper Bottom Row
                     NavigationBar(
                         containerColor = Color.Transparent,
                         tonalElevation = 0.dp,
@@ -309,41 +315,61 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                             .height(72.dp)
                     ) {
                         NavigationBarItem(
-                            selected = activeTab == "Square",
-                            onClick = { activeTab = "Square" },
-                            label = { Text("音乐广场", fontWeight = FontWeight.Bold) },
+                            selected = activeTab == "Search",
+                            onClick = { activeTab = "Search" },
+                            label = { Text("聚合搜索", fontWeight = FontWeight.Bold) },
                             icon = {
                                 Icon(
-                                    imageVector = if (activeTab == "Square") Icons.Filled.List else Icons.Filled.List,
-                                    contentDescription = "广场",
+                                    imageVector = Icons.Filled.Search,
+                                    contentDescription = "搜索",
                                     modifier = Modifier.size(24.dp)
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = Color(0xFF00FFCC),
-                                selectedTextColor = Color(0xFF00FFCC),
-                                unselectedIconColor = Color.White.copy(alpha = 0.6f),
-                                unselectedTextColor = Color.White.copy(alpha = 0.6f),
+                                selectedIconColor = accentColor,
+                                selectedTextColor = accentColor,
+                                unselectedIconColor = Color.White.copy(alpha = 0.5f),
+                                unselectedTextColor = Color.White.copy(alpha = 0.5f),
                                 indicatorColor = Color.White.copy(alpha = 0.08f)
                             )
                         )
 
                         NavigationBarItem(
-                            selected = activeTab == "Player",
-                            onClick = { activeTab = "Player" },
-                            label = { Text("正在播放", fontWeight = FontWeight.Bold) },
+                            selected = activeTab == "List",
+                            onClick = { activeTab = "List" },
+                            label = { Text("我的歌单", fontWeight = FontWeight.Bold) },
                             icon = {
                                 Icon(
-                                    imageVector = if (activeTab == "Player") Icons.Filled.PlayCircle else Icons.Filled.PlayCircle,
-                                    contentDescription = "播放器",
+                                    imageVector = Icons.Filled.List,
+                                    contentDescription = "歌单",
                                     modifier = Modifier.size(24.dp)
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = Color(0xFF00FFCC),
-                                selectedTextColor = Color(0xFF00FFCC),
-                                unselectedIconColor = Color.White.copy(alpha = 0.6f),
-                                unselectedTextColor = Color.White.copy(alpha = 0.6f),
+                                selectedIconColor = accentColor,
+                                selectedTextColor = accentColor,
+                                unselectedIconColor = Color.White.copy(alpha = 0.5f),
+                                unselectedTextColor = Color.White.copy(alpha = 0.5f),
+                                indicatorColor = Color.White.copy(alpha = 0.08f)
+                            )
+                        )
+
+                        NavigationBarItem(
+                            selected = activeTab == "Settings",
+                            onClick = { activeTab = "Settings" },
+                            label = { Text("设置自定义", fontWeight = FontWeight.Bold) },
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Settings,
+                                    contentDescription = "设置",
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = accentColor,
+                                selectedTextColor = accentColor,
+                                unselectedIconColor = Color.White.copy(alpha = 0.5f),
+                                unselectedTextColor = Color.White.copy(alpha = 0.5f),
                                 indicatorColor = Color.White.copy(alpha = 0.08f)
                             )
                         )
@@ -359,81 +385,294 @@ fun MainMusicAppScreen(viewModel: MusicViewModel) {
                 AnimatedContent(
                     targetState = activeTab,
                     transitionSpec = {
-                        if (targetState == "Player") {
-                            (slideInVertically(initialOffsetY = { it / 2 }) + fadeIn()).togetherWith(
-                                slideOutVertically(targetOffsetY = { -it / 2 }) + fadeOut()
-                            )
-                        } else {
-                            (slideInVertically(initialOffsetY = { -it / 2 }) + fadeIn()).togetherWith(
-                                slideOutVertically(targetOffsetY = { it / 2 }) + fadeOut()
-                            )
-                        }
+                        fadeIn(animationSpec = tween(220)).togetherWith(fadeOut(animationSpec = tween(220)))
                     },
-                    label = "tab_fade"
+                    label = "tab_swapper"
                 ) { targetTab ->
                     when (targetTab) {
-                        "Square" -> MusicSquarePane(
+                        "Search" -> MusicSearchPane(
                             viewModel = viewModel,
-                            tracks = viewModel.filteredTracks(),
                             searchQuery = searchQuery,
-                            favorites = favorites,
                             currentTrack = currentTrack,
                             playbackState = playbackState,
-                            onPlayTrack = { track ->
-                                viewModel.selectTrack(track)
-                                activeTab = "Player"
-                            },
-                            onManageSourcesClick = { showSourceManager = true }
+                            accentColor = accentColor
                         )
-
-                        "Player" -> PlayerDashboardPane(
+                        "List" -> MusicListPane(
                             viewModel = viewModel,
+                            favorites = favorites,
                             currentTrack = currentTrack,
                             playbackState = playbackState,
-                            currentPosition = currentPosition,
-                            trackDuration = trackDuration,
-                            repeatMode = repeatMode,
-                            volume = volume,
-                            favorites = favorites,
-                            visualizerBars = visualizerBars,
-                            showLyrics = showPlayerLyrics,
-                            onToggleLyrics = { showPlayerLyrics = !showPlayerLyrics }
+                            accentColor = accentColor
+                        )
+                        "Settings" -> MusicSettingsPane(
+                            viewModel = viewModel,
+                            currentThemeId = currentThemeId,
+                            customScripts = customScripts,
+                            sources = sources,
+                            accentColor = accentColor
                         )
                     }
                 }
             }
-            if (showSourceManager) {
-                SourceManagerDialog(
-                    viewModel = viewModel,
-                    onDismiss = { showSourceManager = false }
+        }
+
+        // Fullscreen slide up player view with vinyl CD disc record & scrolling lyrics
+        AnimatedVisibility(
+            visible = isPlayerExpanded,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            val playerBgGrad = Brush.verticalGradient(
+                colors = listOf(
+                    (currentTrack?.coverColorStart ?: Color(0xFF134E5E)).copy(alpha = 0.95f),
+                    (currentTrack?.coverColorEnd ?: Color(0xFF120B0F)).copy(alpha = 0.97f),
+                    Color(0xFF08090C)
                 )
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(playerBgGrad)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Header Bar with close chevron
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = { isPlayerExpanded = false }) {
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowDown,
+                                contentDescription = "收起",
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = currentTrack?.title ?: "未知音轨",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.fillMaxWidth(0.6f)
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = currentTrack?.artist ?: "未知歌手",
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.5f),
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        IconButton(onClick = { currentTrack?.let { viewModel.toggleFavorite(it.id) } }) {
+                            val isFav = currentTrack?.let { favorites.contains(it.id) } ?: false
+                            Icon(
+                                imageVector = if (isFav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                contentDescription = "收藏",
+                                tint = if (isFav) Color(0xFFFF5252) else Color.White
+                            )
+                        }
+                    }
+
+                    // Middle rotating analog plate CD container or Lyrics sheet view
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clickable { showPlayerLyrics = !showPlayerLyrics },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AnimatedContent(
+                            targetState = showPlayerLyrics,
+                            transitionSpec = {
+                                fadeIn().togetherWith(fadeOut())
+                            },
+                            label = "slide_lyrics"
+                        ) { showLyrics ->
+                            if (showLyrics) {
+                                PlayerLyricsView(viewModel = viewModel, currentPosition = currentPosition, accentColor = accentColor)
+                            } else {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    RotatingVinylPlate(
+                                        coverColorStart = currentTrack?.coverColorStart ?: Color.Gray,
+                                        coverColorEnd = currentTrack?.coverColorEnd ?: Color.LightGray,
+                                        isPlayState = playbackState == PlaybackState.PLAYING
+                                    )
+                                    Spacer(modifier = Modifier.height(24.dp))
+                                    PulseAudioVisualizerBars(bars = visualizerBars, accentColor = accentColor)
+                                }
+                            }
+                        }
+                    }
+
+                    // Scrubber panel slider with repeat states & controllers
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 24.dp, start = 24.dp, end = 24.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = formatTimeline(currentPosition),
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.5f)
+                            )
+
+                            // Scrubber seekbar
+                            Slider(
+                                value = if (trackDuration > 0) currentPosition.toFloat() else 0f,
+                                onValueChange = { viewModel.seekTo(it.toLong()) },
+                                valueRange = 0f..(if (trackDuration > 0) trackDuration.toFloat() else 100f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 12.dp)
+                                    .testTag("playback_slider"),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = accentColor,
+                                    activeTrackColor = accentColor,
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                                )
+                            )
+
+                            Text(
+                                text = formatTimeline(trackDuration),
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.5f)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Controls Console buttons row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Loop state
+                            IconButton(onClick = { viewModel.toggleRepeatMode() }) {
+                                val (icon, desc) = when (repeatMode) {
+                                    RepeatMode.LOOP_LIST -> Icons.Filled.Repeat to "列表循环"
+                                    RepeatMode.LOOP_SINGLE -> Icons.Filled.RepeatOne to "单曲循环"
+                                    RepeatMode.SHUFFLE -> Icons.Filled.Shuffle to "随机播放"
+                                }
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = desc,
+                                    tint = accentColor,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            IconButton(onClick = { viewModel.skipPrevious() }) {
+                                Icon(
+                                    imageVector = Icons.Filled.SkipPrevious,
+                                    contentDescription = "上一首",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(34.dp)
+                                )
+                            }
+
+                            // Big glass play button
+                            Box(
+                                modifier = Modifier
+                                    .size(68.dp)
+                                    .clip(CircleShape)
+                                    .background(accentColor)
+                                    .clickable { viewModel.togglePlayPause() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (playbackState == PlaybackState.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = "播放",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(38.dp)
+                                )
+                            }
+
+                            IconButton(onClick = { viewModel.skipNext() }) {
+                                Icon(
+                                    imageVector = Icons.Filled.SkipNext,
+                                    contentDescription = "下一首",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(34.dp)
+                                )
+                            }
+
+                            // Sound levels overlay toggle Volume Indicator
+                            IconButton(onClick = {
+                                val nextVol = if (volume > 0.1f) 0f else 0.8f
+                                viewModel.setVolume(nextVol)
+                            }) {
+                                Icon(
+                                    imageVector = if (volume > 0.05f) Icons.Filled.VolumeUp else Icons.Filled.VolumeMute,
+                                    contentDescription = "音量",
+                                    tint = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-// ---------------- MUSIC SQUARE TAB ----------------
+// ---------------- 1. MUSIC SEARCH PANE (AGGREGATE MULTI-SOURCE SEARCH) ----------------
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun MusicSquarePane(
+fun MusicSearchPane(
     viewModel: MusicViewModel,
-    tracks: List<Track>,
     searchQuery: String,
-    favorites: Set<Int>,
     currentTrack: Track?,
     playbackState: PlaybackState,
-    onPlayTrack: (Track) -> Unit,
-    onManageSourcesClick: () -> Unit
+    accentColor: Color
 ) {
+    val selectedSearchSource by viewModel.selectedSearchSource.collectAsStateWithLifecycle()
+    val favorites by viewModel.favorites.collectAsStateWithLifecycle()
+    val tracks = viewModel.filteredTracks()
+
+    val sourceOptions = listOf(
+        "all" to "全部聚合",
+        "netease" to "网易云",
+        "qq" to "QQ音乐",
+        "kugou" to "酷狗",
+        "kuwo" to "酷我",
+        "migu" to "咪咕",
+        "custom" to "外部源"
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 20.dp)
     ) {
-        // Modern glass search panel
+        // Modern translucent rounded input box
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { viewModel.setSearchQuery(it) },
-            placeholder = { Text("搜索曲目、合奏家、流派风格...", color = Color.White.copy(alpha = 0.4f)) },
+            placeholder = { Text("搜索周杰伦、晴天、歌手风格或外部源...", color = Color.White.copy(alpha = 0.4f), fontSize = 14.sp) },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 12.dp)
@@ -443,7 +682,7 @@ fun MusicSquarePane(
                 Icon(
                     imageVector = Icons.Filled.Search,
                     contentDescription = "搜索",
-                    tint = Color.White.copy(alpha = 0.5f)
+                    tint = accentColor
                 )
             },
             trailingIcon = {
@@ -451,8 +690,8 @@ fun MusicSquarePane(
                     IconButton(onClick = { viewModel.setSearchQuery("") }) {
                         Icon(
                             imageVector = Icons.Filled.Clear,
-                            contentDescription = "清空",
-                            tint = Color.White.copy(alpha = 0.8f)
+                            contentDescription = "清除",
+                            tint = Color.White.copy(alpha = 0.6f)
                         )
                     }
                 }
@@ -461,90 +700,302 @@ fun MusicSquarePane(
             colors = OutlinedTextFieldDefaults.colors(
                 focusedContainerColor = Color.White.copy(alpha = 0.04f),
                 unfocusedContainerColor = Color.White.copy(alpha = 0.04f),
-                focusedBorderColor = Color(0xFF00FFCC).copy(alpha = 0.5f),
+                focusedBorderColor = accentColor.copy(alpha = 0.6f),
                 unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
                 focusedTextColor = Color.White,
                 unfocusedTextColor = Color.White
             )
         )
 
-        Row(
+        // Horizontal Row of Source Filtering Tabs (Matches direct LX Music desktop style!)
+        LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "所有音轨曲目 (${tracks.size})",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
-
-            // Dynamic Source Manager Trigger Button
-            Button(
-                onClick = onManageSourcesClick,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF00FFCC).copy(alpha = 0.15f),
-                    contentColor = Color(0xFF00FFCC)
-                ),
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                modifier = Modifier.testTag("manage_sources_btn").height(32.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Cloud,
-                    contentDescription = "源管理",
-                    modifier = Modifier.size(14.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("音源同步 ⚙️", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        // Intro offline synthesizer invitation
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(Color(0xFF134E5E).copy(alpha = 0.7f), Color(0xFF71B280).copy(alpha = 0.4f))
-                    )
-                )
-                .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(20.dp))
-                .padding(16.dp)
-        ) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Filled.Hearing,
-                        contentDescription = "合成器",
-                        tint = Color(0xFF00FFCC),
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
+            items(sourceOptions) { (id, label) ->
+                val isSelected = selectedSearchSource == id
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(30.dp))
+                        .background(
+                            if (isSelected) accentColor.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.04f)
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isSelected) accentColor else Color.White.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(30.dp)
+                        )
+                        .clickable {
+                            viewModel.setSelectedSearchSource(id)
+                        }
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        text = "算法发声本地合成器 (免流量)",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color.White
+                        text = label,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isSelected) accentColor else Color.White.copy(alpha = 0.7f)
                     )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "前两首音乐源自本地物理发音引擎：每次点击都会在后台利用音响组件即时算出舒缓、助眠的五声部鸣钟波源，提供最纯粹的自然之音。",
-                    fontSize = 11.sp,
-                    color = Color.White.copy(alpha = 0.8f),
-                    lineHeight = 16.sp
-                )
             }
         }
 
-        // Search empty state
-        if (tracks.isEmpty()) {
+        // Search empty suggestions state or query outputs list
+        if (searchQuery.isEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.MusicNote,
+                    contentDescription = "洛雪",
+                    tint = accentColor.copy(alpha = 0.25f),
+                    modifier = Modifier.size(68.dp)
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "任意搜索 体验极速多源试听",
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Clicking these pills will autocomplete search!
+                Text(
+                    text = "热门精品搜索：",
+                    fontSize = 11.sp,
+                    color = Color.White.copy(alpha = 0.35f)
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val quickTags = listOf("周杰伦", "陈奕迅", "薛之谦", "起风了", "晴天", "素颜")
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    maxItemsInEachRow = 3
+                ) {
+                    quickTags.forEach { keyword ->
+                        Box(
+                            modifier = Modifier
+                                .padding(4.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.White.copy(alpha = 0.05f))
+                                .clickable { viewModel.setSearchQuery(keyword) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = keyword,
+                                fontSize = 11.sp,
+                                color = accentColor.copy(alpha = 0.85f),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            // Searched Tracks List Rendering
+            Text(
+                text = "查找到【$selectedSearchSource】匹配项 (${tracks.size})",
+                fontSize = 11.sp,
+                color = Color.White.copy(alpha = 0.45f),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            if (tracks.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("未检索到匹配结果", color = Color.White.copy(alpha = 0.35f), fontSize = 12.sp)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    itemsIndexed(tracks) { index, track ->
+                        val isPlayingThis = currentTrack?.id == track.id
+                        val isFav = favorites.contains(track.id)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isPlayingThis) Color.White.copy(alpha = 0.08f)
+                                    else Color.White.copy(alpha = 0.03f)
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isPlayingThis) accentColor.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.06f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable { viewModel.selectTrack(track) }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Dynamic index / EQ visualizer
+                                if (isPlayingThis && playbackState == PlaybackState.PLAYING) {
+                                    Box(modifier = Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                                        MiniEqIcon(accentColor = accentColor)
+                                    }
+                                } else {
+                                    Text(
+                                        text = String.format("%02d", index + 1),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White.copy(alpha = 0.35f),
+                                        modifier = Modifier.width(32.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(6.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = track.title,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isPlayingThis) accentColor else Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .background(accentColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                        ) {
+                                            Text(
+                                                text = track.genre.replace("特色", "").replace("特选", ""),
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = accentColor
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = track.artist,
+                                            fontSize = 11.sp,
+                                            color = Color.White.copy(alpha = 0.5f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { viewModel.toggleFavorite(track.id) }) {
+                                    Icon(
+                                        imageVector = if (isFav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                        tint = if (isFav) Color(0xFFFF5252) else Color.White.copy(alpha = 0.3f),
+                                        modifier = Modifier.size(18.dp),
+                                        contentDescription = "收藏"
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    tint = Color.White.copy(alpha = 0.2f),
+                                    modifier = Modifier.size(18.dp),
+                                    contentDescription = "试听"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------- 2. MUSIC MY PLAYLISTS PANE ----------------
+@Composable
+fun MusicListPane(
+    viewModel: MusicViewModel,
+    favorites: Set<Int>,
+    currentTrack: Track?,
+    playbackState: PlaybackState,
+    accentColor: Color
+) {
+    val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+    var selectedCategory by remember { mutableStateOf("favorites") } // "all", "favorites", "synthesizer"
+
+    val categoryTracks = when (selectedCategory) {
+        "favorites" -> tracks.filter { favorites.contains(it.id) }
+        "synthesizer" -> tracks.filter { it.isOfflineSynth }
+        else -> tracks
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp)
+    ) {
+        // Horizontal tabs to segment lists
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val categories = listOf(
+                "favorites" to "我的收藏 💖 (${tracks.count { favorites.contains(it.id) }})",
+                "synthesizer" to "本地合成内置 🤖",
+                "all" to "全部已导入 📁 (${tracks.size})"
+            )
+
+            categories.forEach { (id, label) ->
+                val isActive = selectedCategory == id
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (isActive) accentColor.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.03f)
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isActive) accentColor else Color.White.copy(alpha = 0.06f),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable { selectedCategory = id }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isActive) accentColor else Color.White.copy(alpha = 0.7f),
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        if (categoryTracks.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -553,17 +1004,16 @@ fun MusicSquarePane(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        imageVector = Icons.Filled.AudioFile,
+                        imageVector = Icons.Filled.FolderOpen,
                         contentDescription = "空白",
                         tint = Color.White.copy(alpha = 0.2f),
-                        modifier = Modifier.size(64.dp)
+                        modifier = Modifier.size(56.dp)
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "未搜索到匹配音频曲目",
-                        fontSize = 14.sp,
-                        color = Color.White.copy(alpha = 0.4f),
-                        fontWeight = FontWeight.Bold
+                        text = if (selectedCategory == "favorites") "暂无收藏，快去【聚合搜索】红心试听吧！" else "列表为空",
+                        fontSize = 12.sp,
+                        color = Color.White.copy(alpha = 0.4f)
                     )
                 }
             }
@@ -572,103 +1022,69 @@ fun MusicSquarePane(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 20.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                itemsIndexed(tracks) { idx, track ->
+                itemsIndexed(categoryTracks) { i, track ->
                     val isPlayingThis = currentTrack?.id == track.id
-                    val isFavorite = favorites.contains(track.id)
+                    val isFav = favorites.contains(track.id)
 
-                    // Card block
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(
-                                if (isPlayingThis) Color.White.copy(alpha = 0.1f)
+                                if (isPlayingThis) Color.White.copy(alpha = 0.08f)
                                 else Color.White.copy(alpha = 0.03f)
                             )
                             .border(
                                 width = 1.dp,
-                                color = if (isPlayingThis) Color(0xFF00FFCC).copy(alpha = 0.35f) else Color.White.copy(alpha = 0.06f),
-                                shape = RoundedCornerShape(16.dp)
+                                color = if (isPlayingThis) accentColor.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.05f),
+                                shape = RoundedCornerShape(12.dp)
                             )
-                            .clickable { onPlayTrack(track) }
+                            .clickable { viewModel.selectTrack(track) }
                             .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            // Beautiful cover thumbnail disc
-                            Box(
-                                modifier = Modifier
-                                    .size(50.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        Brush.radialGradient(
-                                            listOf(track.coverColorStart, track.coverColorEnd)
-                                        )
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (isPlayingThis && playbackState == PlaybackState.PLAYING) {
-                                    // Animated sound spectrum badge
-                                    MiniEqIcon()
-                                } else {
-                                    Icon(
-                                        imageVector = if (track.isOfflineSynth) Icons.Filled.Memory else Icons.Filled.CloudQueue,
-                                        contentDescription = "类型",
-                                        tint = Color.White.copy(alpha = 0.6f),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
+                        if (isPlayingThis && playbackState == PlaybackState.PLAYING) {
+                            Box(modifier = Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                                MiniEqIcon(accentColor = accentColor)
                             }
-
-                            Spacer(modifier = Modifier.width(14.dp))
-
-                            Column {
-                                Text(
-                                    text = track.title,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isPlayingThis) Color(0xFF00FFCC) else Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = track.artist,
-                                    fontSize = 12.sp,
-                                    color = Color.White.copy(alpha = 0.5f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                        } else {
+                            Text(
+                                text = String.format("%02d", i + 1),
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.35f),
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(32.dp)
+                            )
                         }
 
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Favorite toggle button
-                            IconButton(
-                                onClick = { viewModel.toggleFavorite(track.id) },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                                    contentDescription = "加收藏",
-                                    tint = if (isFavorite) Color(0xFFFF5252) else Color.White.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = track.title,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isPlayingThis) accentColor else Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "${track.genre} • ${track.artist}",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.5f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
 
-                            // Quick selection arrow indicator
+                        IconButton(onClick = { viewModel.toggleFavorite(track.id) }) {
                             Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "进入播放",
-                                tint = Color.White.copy(alpha = 0.3f),
-                                modifier = Modifier.size(24.dp)
+                                imageVector = if (isFav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                contentDescription = null,
+                                tint = if (isFav) Color(0xFFFF5252) else Color.White.copy(alpha = 0.25f),
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -678,368 +1094,397 @@ fun MusicSquarePane(
     }
 }
 
-// ---------------- NOW PLAYING TAB ----------------
+// ---------------- 3. SYSTEM CONFIGS & CUSTOM SCRIPT PANEL ----------------
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun PlayerDashboardPane(
+fun MusicSettingsPane(
     viewModel: MusicViewModel,
-    currentTrack: Track?,
-    playbackState: PlaybackState,
-    currentPosition: Long,
-    trackDuration: Long,
-    repeatMode: RepeatMode,
-    volume: Float,
-    favorites: Set<Int>,
-    visualizerBars: List<Float>,
-    showLyrics: Boolean,
-    onToggleLyrics: () -> Unit
+    currentThemeId: String,
+    customScripts: List<CustomScript>,
+    sources: List<MusicSource>,
+    accentColor: Color
 ) {
-    if (currentTrack == null) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = Icons.Filled.MusicOff,
-                    contentDescription = "暂无音频",
-                    tint = Color.White.copy(alpha = 0.2f),
-                    modifier = Modifier.size(80.dp)
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "请先在「音乐广场」选择音频曲目",
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 14.sp
-                )
-            }
-        }
-        return
-    }
+    val context = LocalContext.current
+    var scriptUrlInput by remember { mutableStateOf("") }
+    var neteaseIdInput by remember { mutableStateOf("") }
 
-    val isFavorite = favorites.contains(currentTrack.id)
+    var feedbackMsg by remember { mutableStateOf("") }
+    var isOperating by remember { mutableStateOf(false) }
 
-    Column(
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+            .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(bottom = 24.dp)
     ) {
-        // Track Header (Current Selection Title/Artist)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = currentTrack.title,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Black,
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = currentTrack.artist,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color.White.copy(alpha = 0.5f),
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        // Part A: Dynamic rainbow palettes (Choose application styling theme)
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                    .padding(14.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Filled.Palette, contentDescription = "主题", tint = accentColor, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("极客主题配色", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Theme color round configurations selection grid
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    appThemes.forEach { theme ->
+                        val isSelected = currentThemeId == theme.id
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(theme.accentColor)
+                                .border(
+                                    width = if (isSelected) 3.dp else 1.dp,
+                                    color = if (isSelected) Color.White else Color.Black.copy(alpha = 0.3f),
+                                    shape = CircleShape
+                                )
+                                .clickable { viewModel.selectTheme(context, theme.id) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = "已选",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // Center visual deck (either Rotating record CD, or Scrolling synced lyrics)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(vertical = 12.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            AnimatedContent(
-                targetState = showLyrics,
-                transitionSpec = {
-                    fadeIn(animationSpec = tween(350)).togetherWith(fadeOut(animationSpec = tween(350)))
-                },
-                label = "lyric_crossfade"
-            ) { showLyricSheet ->
-                if (showLyricSheet) {
-                    PlayerLyricsView(viewModel = viewModel, currentPosition = currentPosition)
-                } else {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+        // Part B: Import Custom LX JS Script URLs
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                    .padding(14.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Filled.Code, contentDescription = "JS", tint = accentColor, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("导入 LX 自定义 JS 音源脚本", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "在此贴入标准洛雪自定义 JS 链接。若导入海棠源(http://music.haitangw.net/cqapi/wv.js)，系统将智能解析并释放多条经典无损多功能音质流！",
+                    fontSize = 11.sp,
+                    color = Color.White.copy(alpha = 0.45f),
+                    lineHeight = 15.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = scriptUrlInput,
+                        onValueChange = { scriptUrlInput = it },
+                        placeholder = { Text("wv.js 或外部自定义口令...", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = accentColor,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f)
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Button(
+                        onClick = {
+                            if (scriptUrlInput.trim().isEmpty()) {
+                                feedbackMsg = "请输入脚本链接。"
+                                return@Button
+                            }
+                            isOperating = true
+                            feedbackMsg = "正在提取外部脚本信息并解码..."
+                            viewModel.addCustomScript(context, scriptUrlInput.trim()) { success, msg ->
+                                isOperating = false
+                                feedbackMsg = msg
+                                if (success) {
+                                    scriptUrlInput = ""
+                                }
+                            }
+                        },
+                        enabled = !isOperating,
+                        colors = ButtonDefaults.buttonColors(containerColor = accentColor, contentColor = Color.Black),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.height(40.dp)
                     ) {
-                        // Beautiful Analog Rotating Vinyl Record
-                        RotatingVinylPlate(
-                            coverColorStart = currentTrack.coverColorStart,
-                            coverColorEnd = currentTrack.coverColorEnd,
-                            isPlayState = playbackState == PlaybackState.PLAYING
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Holographic audio spectrum waves below Vinyl player
-                        PulseAudioVisualizerBars(bars = visualizerBars)
+                        Text("导入", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
-        // Playing Controller Console Group (Slider, Buttons, Volume)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp)
-        ) {
-            // Scrub timeline bar
-            val currentProgressRatio = if (trackDuration > 0) currentPosition.toFloat() / trackDuration else 0f
-            var localSliderState by remember(currentPosition) { mutableStateOf(currentProgressRatio) }
-            var isScrubbing by remember { mutableStateOf(false) }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        // Part C: List imported scripts
+        item {
+            Column {
                 Text(
-                    text = formatTimeline(currentPosition),
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
+                    text = "已注册音源脚本 (${customScripts.size})",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
                     color = Color.White.copy(alpha = 0.5f)
                 )
 
-                Slider(
-                    value = if (isScrubbing) localSliderState else currentProgressRatio,
-                    onValueChange = {
-                        isScrubbing = true
-                        localSliderState = it
-                    },
-                    onValueChangeFinished = {
-                        isScrubbing = false
-                        val targetMs = (localSliderState * trackDuration).toLong()
-                        viewModel.seekTo(targetMs)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 8.dp)
-                        .testTag("progress_slider"),
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF00FFCC),
-                        activeTrackColor = Color(0xFF00FFCC),
-                        inactiveTrackColor = Color.White.copy(alpha = 0.12f)
-                    )
-                )
+                Spacer(modifier = Modifier.height(6.dp))
 
-                Text(
-                    text = formatTimeline(trackDuration),
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Color.White.copy(alpha = 0.5f)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Controller console buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Repeat Mode Selector (Shuffle / Single / List)
-                IconButton(onClick = { viewModel.toggleRepeatMode() }) {
-                    val icon = when (repeatMode) {
-                        RepeatMode.LOOP_LIST -> Icons.Filled.Repeat
-                        RepeatMode.LOOP_SINGLE -> Icons.Filled.RepeatOne
-                        RepeatMode.SHUFFLE -> Icons.Filled.Shuffle
-                    }
-                    val iconTint = if (repeatMode == RepeatMode.LOOP_LIST) Color.White.copy(alpha = 0.5f) else Color(0xFF00FFCC)
-                    Icon(imageVector = icon, contentDescription = "循环模式", tint = iconTint)
-                }
-
-                // Previous track
-                IconButton(
-                    onClick = { viewModel.skipPrevious() },
-                    modifier = Modifier.testTag("prev_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.SkipPrevious,
-                        contentDescription = "上一首",
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-
-                // Play / Pause Circle Action Button
-                Box(
-                    modifier = Modifier
-                        .size(68.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                listOf(Color(0xFF00FFCC), Color(0xFF00BFFF))
-                            )
-                        )
-                        .clickable { viewModel.togglePlayPause() }
-                        .testTag("play_pause_button"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (playbackState == PlaybackState.LOADING) {
-                        CircularProgressIndicator(
-                            color = Color.Black,
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    } else {
-                        val icon = if (playbackState == PlaybackState.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = "播放暂停",
-                            tint = Color.Black,
-                            modifier = Modifier.size(36.dp)
-                        )
+                if (customScripts.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.White.copy(alpha = 0.01f), RoundedCornerShape(12.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.04f), RoundedCornerShape(12.dp))
+                            .padding(14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("无已录入的外部 JS 脚本。请从上方复制导入！", fontSize = 11.sp, color = Color.White.copy(alpha = 0.3f))
                     }
                 }
-
-                // Next track
-                IconButton(
-                    onClick = { viewModel.skipNext() },
-                    modifier = Modifier.testTag("next_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.SkipNext,
-                        contentDescription = "下一首",
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-
-                // Center View toggler (Lyrics alternate)
-                IconButton(onClick = onToggleLyrics) {
-                    Icon(
-                        imageVector = if (showLyrics) Icons.Filled.FilePresent else Icons.Filled.Lyrics,
-                        contentDescription = "切换歌词",
-                        tint = if (showLyrics) Color(0xFF00FFCC) else Color.White.copy(alpha = 0.6f),
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
             }
+        }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Neat volume slider bar
+        items(customScripts) { script ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
+                    .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(12.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Filled.VolumeMute,
-                    contentDescription = "静音",
-                    tint = Color.White.copy(alpha = 0.4f),
-                    modifier = Modifier.size(16.dp)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(script.name, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(accentColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                        ) {
+                            Text("v${script.version}", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = accentColor)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(script.description, fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f))
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text("作者: ${script.author} • 地址: ${script.url}", fontSize = 8.sp, color = Color.White.copy(alpha = 0.3f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
 
-                Slider(
-                    value = volume,
-                    onValueChange = { viewModel.setVolume(it) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(20.dp)
-                        .padding(horizontal = 10.dp)
-                        .testTag("volume_slider"),
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color.White,
-                        activeTrackColor = Color.White.copy(alpha = 0.8f),
-                        inactiveTrackColor = Color.White.copy(alpha = 0.12f)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = script.isActive,
+                        onCheckedChange = { viewModel.toggleScriptActive(context, script.url) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = accentColor,
+                            uncheckedThumbColor = Color.White.copy(alpha = 0.4f),
+                            uncheckedTrackColor = Color.White.copy(alpha = 0.05f)
+                        ),
+                        modifier = Modifier.scale(0.7f)
                     )
-                )
 
-                Icon(
-                    imageVector = Icons.Filled.VolumeUp,
-                    contentDescription = "最大音量",
-                    tint = Color.White.copy(alpha = 0.4f),
-                    modifier = Modifier.size(16.dp)
-                )
+                    IconButton(onClick = { viewModel.deleteCustomScript(context, script.url) }) {
+                        Icon(imageVector = Icons.Filled.Delete, contentDescription = "删除", tint = Color.Red.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+
+        // Part D: NetEase ID playlist syncing module
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                    .padding(14.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Filled.LibraryMusic, contentDescription = "歌单", tint = accentColor, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("拉取同步网易云歌单", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text("拉取公开网易歌单，可在上方列表内分流播放：", fontSize = 10.sp, color = Color.White.copy(alpha = 0.4f))
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = neteaseIdInput,
+                        onValueChange = { neteaseIdInput = it },
+                        placeholder = { Text("例如: 1954326500...", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = accentColor,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f)
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Button(
+                        onClick = {
+                            if (neteaseIdInput.trim().isEmpty()) {
+                                feedbackMsg = "请输入歌单ID"
+                                return@Button
+                            }
+                            isOperating = true
+                            feedbackMsg = "连接网易云节点中并抓取歌曲项..."
+                            val source = MusicSource(neteaseIdInput.trim(), "网易歌单", "netease")
+                            viewModel.syncMusicSource(context, source) { success, msg ->
+                                isOperating = false
+                                feedbackMsg = msg
+                                if (success) {
+                                    neteaseIdInput = ""
+                                }
+                            }
+                        },
+                        enabled = !isOperating,
+                        colors = ButtonDefaults.buttonColors(containerColor = accentColor, contentColor = Color.Black),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        Text("同步", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Feedback messaging dialog panel
+        if (feedbackMsg.isNotEmpty()) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                        .padding(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (isOperating) {
+                            CircularProgressIndicator(modifier = Modifier.size(12.dp), color = accentColor, strokeWidth = 1.5.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text(
+                            text = feedbackMsg,
+                            fontSize = 11.sp,
+                            color = if (feedbackMsg.contains("成功") || feedbackMsg.contains("版本")) accentColor else Color.White
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-// ---------------- VINYL Rotating visual components ----------------
+// ---------------- ANALOG ROTATING VINYL PLATE CD OVERLAY ----------------
 @Composable
 fun RotatingVinylPlate(
     coverColorStart: Color,
     coverColorEnd: Color,
     isPlayState: Boolean
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "vinyl")
-    val rotationAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(12000, easing = LinearEasing),
-            repeatMode = androidx.compose.animation.core.RepeatMode.Restart
-        ),
-        label = "rotation"
+    var angle by remember { mutableStateOf(0f) }
+
+    LaunchedEffect(isPlayState) {
+        if (isPlayState) {
+            while (true) {
+                angle = (angle + 1f) % 360f
+                delay(20)
+            }
+        }
+    }
+
+    val activeAngle by animateFloatAsState(
+        targetValue = angle,
+        animationSpec = spring(stiffness = Spring.StiffnessVeryLow),
+        label = "angleAnim"
     )
 
-    // Current angle state animation
-    val activeAngle = if (isPlayState) rotationAngle else 0f
-
-    // Needle rotation mapping (tonearm rotation moves onto record when music starts)
     val tonearmAngle by animateFloatAsState(
-        targetValue = if (isPlayState) 22f else 3f,
+        targetValue = if (isPlayState) 22f else 0f,
         animationSpec = spring(stiffness = Spring.StiffnessLow),
         label = "tonearm"
     )
 
     Box(
         modifier = Modifier
-            .size(280.dp)
+            .size(300.dp)
             .padding(10.dp),
         contentAlignment = Alignment.Center
     ) {
-        // Outer Vinyl Disc Plate
+        // Black CD Plate
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .rotate(activeAngle)
                 .clip(CircleShape)
                 .background(Color(0xFF0F0F13))
-                .border(6.dp, Color(0xFF1C1C24), CircleShape)
+                .border(6.dp, Color(0xFF1B1B22), CircleShape)
         ) {
-            // Glossy Concentric Groove vinyl rings
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val radiusMax = size.width / 2
                 drawCircle(
-                    color = Color.White.copy(alpha = 0.05f),
+                    color = Color.White.copy(alpha = 0.06f),
                     radius = radiusMax * 0.85f,
-                    style = Stroke(width = 0.8.dp.toPx())
+                    style = Stroke(width = 0.82f)
                 )
                 drawCircle(
                     color = Color.White.copy(alpha = 0.04f),
                     radius = radiusMax * 0.7f,
-                    style = Stroke(width = 0.8.dp.toPx())
+                    style = Stroke(width = 0.82f)
                 )
                 drawCircle(
                     color = Color.White.copy(alpha = 0.05f),
                     radius = radiusMax * 0.55f,
-                    style = Stroke(width = 0.8.dp.toPx())
+                    style = Stroke(width = 0.82f)
                 )
             }
 
-            // Rich Radial Colorful Label disk center cover
+            // Radial colorful gradient visual seed cover in the center
             Box(
                 modifier = Modifier
-                    .size(105.dp)
+                    .size(110.dp)
                     .align(Alignment.Center)
                     .clip(CircleShape)
                     .background(
@@ -1047,24 +1492,23 @@ fun RotatingVinylPlate(
                             colors = listOf(coverColorStart, coverColorEnd)
                         )
                     )
-                    .border(2.dp, Color.Black.copy(alpha = 0.15f), CircleShape)
+                    .border(2.dp, Color.Black.copy(alpha = 0.2f), CircleShape)
             ) {
-                // Absolute CD center physical spindle aperture hole
                 Box(
                     modifier = Modifier
                         .size(24.dp)
                         .align(Alignment.Center)
                         .clip(CircleShape)
                         .background(Color.Black)
-                        .border(1.5.dp, Color.White.copy(alpha = 0.2f), CircleShape)
+                        .border(1.5.dp, Color.White.copy(alpha = 0.25f), CircleShape)
                 )
             }
         }
 
-        // Silver retro magnetic needle tonearm overlay at the top-right
+        // Silver needle tonearm overlaying the disk
         Canvas(
             modifier = Modifier
-                .size(100.dp)
+                .size(110.dp)
                 .align(Alignment.TopEnd)
                 .offset(x = 10.dp, y = (-20).dp)
                 .graphicsLayer {
@@ -1075,11 +1519,9 @@ fun RotatingVinylPlate(
             val pivotX = size.width * 0.8f
             val pivotY = size.height * 0.2f
 
-            // Top mount base
             drawCircle(color = Color(0xFFE2E8F0), radius = 8.dp.toPx(), center = Offset(pivotX, pivotY))
             drawCircle(color = Color(0xFF475569), radius = 4.dp.toPx(), center = Offset(pivotX, pivotY))
 
-            // Long tone-arm stick
             drawLine(
                 color = Color(0xFFCBD5E1),
                 start = Offset(pivotX, pivotY),
@@ -1087,7 +1529,6 @@ fun RotatingVinylPlate(
                 strokeWidth = 3.dp.toPx()
             )
 
-            // Bent head cartridge
             drawLine(
                 color = Color(0xFF94A3B8),
                 start = Offset(size.width * 0.25f, size.height * 0.85f),
@@ -1095,7 +1536,6 @@ fun RotatingVinylPlate(
                 strokeWidth = 4.dp.toPx()
             )
 
-            // Needle cartridge weight head block
             drawRoundRect(
                 color = Color(0xFF334155),
                 topLeft = Offset(size.width * 0.08f, size.height * 0.90f),
@@ -1108,17 +1548,16 @@ fun RotatingVinylPlate(
 
 // ---------------- WAVE SPECTRUM BARS VISUALIZER ----------------
 @Composable
-fun PulseAudioVisualizerBars(bars: List<Float>) {
+fun PulseAudioVisualizerBars(bars: List<Float>, accentColor: Color) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .height(52.dp)
             .padding(horizontal = 24.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         bars.forEach { heightRatio ->
-            // Dynamic anim height values
             val animHeight by animateFloatAsState(
                 targetValue = heightRatio,
                 animationSpec = spring(stiffness = Spring.StiffnessHigh),
@@ -1132,7 +1571,7 @@ fun PulseAudioVisualizerBars(bars: List<Float>) {
                     .clip(RoundedCornerShape(4.dp))
                     .background(
                         Brush.verticalGradient(
-                            listOf(Color(0xFF00FFCC), Color(0xFF00BFFF).copy(alpha = 0.4f))
+                            listOf(accentColor, accentColor.copy(alpha = 0.35f))
                         )
                     )
             )
@@ -1140,22 +1579,21 @@ fun PulseAudioVisualizerBars(bars: List<Float>) {
     }
 }
 
-// ---------------- SCROLLING LYRICS LIST PANE ----------------
+// ---------------- SCROLLING LYRICS LIST VIEWS ----------------
 @Composable
 fun PlayerLyricsView(
     viewModel: MusicViewModel,
-    currentPosition: Long
+    currentPosition: Long,
+    accentColor: Color
 ) {
     val lyricsLines by viewModel.parsedLyrics.collectAsStateWithLifecycle()
     val currentIndex by viewModel.currentLyricsIndex.collectAsStateWithLifecycle()
 
     val lazyListState = rememberLazyListState()
 
-    // Smooth scroll list on index updating
     LaunchedEffect(currentIndex) {
         if (currentIndex >= 0 && currentIndex < lyricsLines.size) {
-            // Maintain centered alignment
-            lazyListState.animateScrollToItem(index = currentIndex, scrollOffset = -220)
+            lazyListState.animateScrollToItem(index = currentIndex, scrollOffset = -180)
         }
     }
 
@@ -1165,7 +1603,7 @@ fun PlayerLyricsView(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "纯乐器曲目，暂无匹配歌词文字",
+                text = "纯律动音频、未载入匹配的歌词文件",
                 color = Color.White.copy(alpha = 0.4f),
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center
@@ -1213,7 +1651,7 @@ fun PlayerLyricsView(
                         Box(
                             modifier = Modifier
                                 .size(6.dp)
-                                .background(Color(0xFF00FFCC), CircleShape)
+                                .background(accentColor, CircleShape)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                     }
@@ -1222,7 +1660,7 @@ fun PlayerLyricsView(
                         text = line.text,
                         fontSize = fontSizeAnimation.sp,
                         fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
-                        color = if (isActive) Color(0xFF00FFCC) else Color.White,
+                        color = if (isActive) accentColor else Color.White,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth(0.9f)
@@ -1234,9 +1672,9 @@ fun PlayerLyricsView(
     }
 }
 
-// Mini dynamic animated sound EQ indicator
+// Mini animated spectrum bars badge
 @Composable
-fun MiniEqIcon() {
+fun MiniEqIcon(accentColor: Color) {
     val barValues = listOf(0.4f, 0.9f, 0.6f)
     Row(
         modifier = Modifier.size(16.dp),
@@ -1259,395 +1697,15 @@ fun MiniEqIcon() {
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(heightScale)
-                    .background(Color(0xFF00FFCC), RoundedCornerShape(1.dp))
+                    .background(accentColor, RoundedCornerShape(1.dp))
             )
         }
     }
 }
 
-// ---------------- MATH AND STRING FORMATTERS ----------------
+// ---------------- GENERAL MATH & DATES STRING FORMATTERS ----------------
 fun formatTimeline(milliseconds: Long): String {
     val seconds = (milliseconds / 1000) % 60
     val minutes = (milliseconds / (1000 * 60)) % 60
     return String.format("%02d:%02d", minutes, seconds)
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun SourceManagerDialog(
-    viewModel: MusicViewModel,
-    onDismiss: () -> Unit
-) {
-    val sources by viewModel.sources.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-
-    var neteaseId by remember { mutableStateOf("") }
-    var jsonUrl by remember { mutableStateOf("") }
-    var jsonName by remember { mutableStateOf("") }
-
-    var feedbackMsg by remember { mutableStateOf("") }
-    var isLoading by remember { mutableStateOf(false) }
-
-    Dialog(
-        onDismissRequest = onDismiss
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(24.dp))
-                .background(Color(0xFF14151B))
-                .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(24.dp))
-                .padding(20.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 580.dp)
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Filled.Cloud,
-                            contentDescription = "音源",
-                            tint = Color(0xFF00FFCC),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "音乐源同步管理",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "关闭",
-                            tint = Color.White.copy(alpha = 0.6f)
-                        )
-                    }
-                }
-
-                // Inner content
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Option A: NetEase Playlist sync
-                    item {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
-                                .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
-                                .padding(12.dp)
-                        ) {
-                            Text(
-                                text = "同步网易云音乐歌单",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF00FFCC)
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "输入歌单ID (拉取网易云公开或自建歌单ID即可同步)：",
-                                fontSize = 11.sp,
-                                color = Color.White.copy(alpha = 0.5f)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = neteaseId,
-                                onValueChange = { neteaseId = it },
-                                placeholder = { Text("例如：1954326500", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF00FFCC).copy(alpha = 0.6f),
-                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                )
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    if (neteaseId.trim().isEmpty()) {
-                                        feedbackMsg = "请输入歌单ID"
-                                        return@Button
-                                    }
-                                    isLoading = true
-                                    feedbackMsg = "正在链接网易云多媒体服务器..."
-                                    val source = MusicSource(neteaseId.trim(), "网易云歌单", "netease")
-                                    viewModel.syncMusicSource(context, source) { success, msg ->
-                                        isLoading = false
-                                        feedbackMsg = msg
-                                        if (success) {
-                                            neteaseId = ""
-                                        }
-                                    }
-                                },
-                                enabled = !isLoading,
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(36.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF00FFCC),
-                                    contentColor = Color.Black,
-                                    disabledContainerColor = Color.White.copy(alpha = 0.12f)
-                                )
-                            ) {
-                                Text("立即拉取并同步", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
-                    // Option B: Custom standard JSON Audio endpoints
-                    item {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
-                                .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
-                                .padding(12.dp)
-                        ) {
-                            Text(
-                                text = "导入第三方 JSON 音乐源",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF00FFCC)
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "输入包含 [{title, artist, url, [lyrics]}] 的公开源链接：",
-                                fontSize = 11.sp,
-                                color = Color.White.copy(alpha = 0.5f)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = jsonName,
-                                onValueChange = { jsonName = it },
-                                placeholder = { Text("音乐源备注：如「极客发烧友」", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF00FFCC).copy(alpha = 0.6f),
-                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                )
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = jsonUrl,
-                                onValueChange = { jsonUrl = it },
-                                placeholder = { Text("https://example.com/music.json", fontSize = 12.sp, color = Color.White.copy(alpha = 0.3f)) },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF00FFCC).copy(alpha = 0.6f),
-                                    unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                )
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    if (jsonUrl.trim().isEmpty()) {
-                                        feedbackMsg = "请输入JSON数据连接"
-                                        return@Button
-                                    }
-                                    val name = jsonName.trim().ifEmpty { "自定义音源" }
-                                    isLoading = true
-                                    feedbackMsg = "正在解析远程JSON节点..."
-                                    val source = MusicSource(jsonUrl.trim(), name, "json")
-                                    viewModel.syncMusicSource(context, source) { success, msg ->
-                                        isLoading = false
-                                        feedbackMsg = msg
-                                        if (success) {
-                                            jsonUrl = ""
-                                            jsonName = ""
-                                        }
-                                    }
-                                },
-                                enabled = !isLoading,
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(36.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF00FFCC),
-                                    contentColor = Color.Black,
-                                    disabledContainerColor = Color.White.copy(alpha = 0.12f)
-                                )
-                            ) {
-                                Text("立即同步解析", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
-                    // Section C: List of already imported packages/sources
-                    item {
-                        Column {
-                            Text(
-                                text = "已同步的外部音源 (${sources.size})",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            if (sources.isEmpty()) {
-                                Text(
-                                    text = "暂未导入任何外部音源，上述通道输入一键添加！",
-                                    fontSize = 11.sp,
-                                    color = Color.White.copy(alpha = 0.35f),
-                                    modifier = Modifier.padding(vertical = 12.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    items(sources) { src ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.White.copy(alpha = 0.02f), RoundedCornerShape(12.dp))
-                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                Text(
-                                    text = src.name,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                val labelType = if (src.type == "netease") "网易云歌单ID: " else "JSON数据源： "
-                                Text(
-                                    text = "$labelType${src.id}",
-                                    fontSize = 9.sp,
-                                    color = Color.White.copy(alpha = 0.4f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .background(Color(0xFF00FFCC).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = "${src.songCount}首曲目",
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF00FFCC)
-                                    )
-                                }
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                // Re-sync button
-                                IconButton(
-                                    onClick = {
-                                        isLoading = true
-                                        feedbackMsg = "正在重新同步【${src.name}】..."
-                                        viewModel.syncMusicSource(context, src) { _, msg ->
-                                            isLoading = false
-                                            feedbackMsg = msg
-                                        }
-                                    },
-                                    enabled = !isLoading,
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Sync,
-                                        contentDescription = "同步",
-                                        tint = Color(0xFF00FFCC).copy(alpha = 0.8f),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(4.dp))
-
-                                // Delete button
-                                IconButton(
-                                    onClick = {
-                                        viewModel.deleteMusicSource(context, src.id)
-                                        feedbackMsg = "已成功移除：[${src.name}]"
-                                    },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Delete,
-                                        contentDescription = "删除",
-                                        tint = Color.Red.copy(alpha = 0.6f),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Feedback panel
-                if (feedbackMsg.isNotEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 12.dp)
-                            .background(Color.White.copy(alpha = 0.04f), RoundedCornerShape(8.dp))
-                            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
-                            .padding(8.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(12.dp),
-                                    color = Color(0xFF00FFCC),
-                                    strokeWidth = 1.5.dp
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                            }
-                            Text(
-                                text = feedbackMsg,
-                                fontSize = 10.sp,
-                                color = if (feedbackMsg.contains("成功") || feedbackMsg.contains("导入") || feedbackMsg.contains("新增")) {
-                                    Color(0xFF00FFCC)
-                                } else if (feedbackMsg.contains("错误") || feedbackMsg.contains("失败") || feedbackMsg.contains("异常")) {
-                                    Color.Red.copy(alpha = 0.82f)
-                                } else {
-                                    Color.White.copy(alpha = 0.8f)
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
