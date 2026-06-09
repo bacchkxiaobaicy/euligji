@@ -1,5 +1,6 @@
 package com.example
 
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import com.example.ui.theme.MyApplicationTheme
@@ -21,7 +22,15 @@ class GreetingScreenshotTest {
 
   @Test
   fun greeting_screenshot() {
-    composeTestRule.setContent { MyApplicationTheme { PermissionPlaceholderScreen {} } }
+    composeTestRule.setContent {
+      MyApplicationTheme {
+        RotatingVinylPlate(
+          coverColorStart = Color.Red,
+          coverColorEnd = Color.Blue,
+          isPlayState = true
+        )
+      }
+    }
 
     composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/greeting.png")
   }

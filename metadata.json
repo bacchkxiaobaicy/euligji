@@ -1,6 +1,6 @@
 {
-  "name": "相机",
-  "description": "一款简洁而强大的相机应用，支持实时预览、滤镜处理、全屏画幅与触感拍照。",
+  "name": "音乐播放器",
+  "description": "一个精美且交互交互十足的音乐播放器，支持多种预设音乐、旋律合成、歌词同步、动态频谱等功能。",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
